@@ -1,5 +1,12 @@
 """Deterministic runtime domain contracts."""
 
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
+from agent_runtime_lab.domain.state import TERMINAL_STATUSES, RunState, RunStatus
 
-__all__ = ["EventType", "ExecutionEvent"]
+__all__ = [
+    "TERMINAL_STATUSES",
+    "EventType",
+    "ExecutionEvent",
+    "RunState",
+    "RunStatus",
+]
