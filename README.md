@@ -3,14 +3,17 @@
 Reliability infrastructure for agentic LLM execution.
 
 Agent Runtime Lab is the runtime layer of **Reliable Agentic LLM Systems —
-Runtime · Evaluation · Inference**. It will study how an agent execution can be
+Runtime · Evaluation · Inference**. It studies how an agent execution can be
 authorized, persisted, recovered, replayed, and validated without silently
 duplicating tool effects or bypassing user gates.
 
 ## Current status
 
-This repository is an initial project scaffold. It does not yet claim a
-production runtime, durable replay, crash recovery, or enforced sandboxing.
+The S0/R1 deterministic core is implemented: immutable execution events,
+immutable run state, a pure lifecycle reducer, duplicate-delivery protection,
+terminal-state enforcement, and ordered replay. This does not yet claim durable
+database persistence, external side-effect idempotency, crash recovery,
+sandboxing, worker orchestration, or production readiness.
 
 The intended scope is:
 
@@ -48,7 +51,7 @@ python -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-The first implementation milestone will define the event and replay contracts
-before adding an agent loop or broad tool surface.
+The next milestone adds SQLite event persistence and explicit tool
+intent/receipt records before any broad agent loop or tool surface.
 
 See [docs/progress.md](docs/progress.md) for the current evidence-backed status.

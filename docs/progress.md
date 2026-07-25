@@ -34,3 +34,36 @@ Deferred:
 - Web dashboard.
 - Multi-agent orchestration.
 - CodeOwnership product UI.
+
+## 2026-07-26 — S0/R1 deterministic core
+
+Completed:
+
+- Added a Python 3.11 `src/` package with editable-install support.
+- Defined canonical immutable execution events and typed contract errors.
+- Defined immutable run state and explicit terminal states.
+- Implemented a pure lifecycle reducer with sequence, run, transition, tool
+  identity, duplicate-delivery, and terminal-state invariants.
+- Implemented deterministic ordered replay through the same reducer.
+
+Verified evidence:
+
+- `python -m pytest -v`: 25 tests pass.
+- `python -m ruff check src tests`: passes.
+- `python -m ruff format --check src tests`: passes.
+- Exact duplicate delivery is a no-op; conflicting reuse of an event ID fails.
+- Out-of-order and cross-run events fail explicitly.
+- Terminal state accepts exact redelivery but rejects new mutation.
+
+Lucas understanding gate:
+
+- Explain Event versus State.
+- Explain why Reducer must have no I/O, clock, or randomness.
+- Explain exact duplicate delivery versus conflicting duplicate identity.
+- Predict the state sequence for one successful tool lifecycle.
+- Explain why R1 replay is not yet durable crash recovery.
+
+Next milestone:
+
+- R2 SQLite Event Store, Tool Intent/Receipt persistence, and crash-window
+  recovery contracts.

@@ -1169,7 +1169,7 @@ Run:
 & .\.venv\Scripts\python.exe -m ruff format --check src tests
 ```
 
-Expected: replay tests show `4 passed`, the full suite shows `24 passed`,
+Expected: replay tests show `4 passed`, the full suite shows `25 passed`,
 and Ruff passes.
 
 - [ ] **Step 6: Commit replay and public exports**
@@ -1222,7 +1222,7 @@ Completed:
 
 Verified evidence:
 
-- `python -m pytest -v`: 24 tests pass.
+- `python -m pytest -v`: 25 tests pass.
 - `python -m ruff check src tests`: passes.
 - `python -m ruff format --check src tests`: passes.
 - Exact duplicate delivery is a no-op; conflicting reuse of an event ID fails.
@@ -1259,7 +1259,7 @@ git status --short
 Expected:
 
 ```text
-24 passed
+25 passed
 All checks passed!
 All files already formatted
 git diff --check exits 0
