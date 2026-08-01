@@ -7,3 +7,5 @@ build/
 dist/
 *.egg-info/
 .worktrees/
+.superpowers/
+.idea/
