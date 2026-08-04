@@ -6,8 +6,14 @@ from typing import Any
 
 import pytest
 
-from agent_runtime_lab.domain.errors import UnsafeToolRetryError
-from agent_runtime_lab.domain.tool_effects import ToolIntent, ToolOutcome
+from agent_runtime_lab.domain.errors import (
+    UnknownToolError,
+    UnsafeToolRetryError,
+)
+from agent_runtime_lab.domain.tool_effects import (
+    ToolIntent,
+    ToolOutcome,
+)
 from agent_runtime_lab.durable_tool_executor import (
     DurableToolExecutor,
     ExecutionCheckpoint,
@@ -15,9 +21,15 @@ from agent_runtime_lab.durable_tool_executor import (
 from agent_runtime_lab.persistence.sqlite_tool_effect_store import (
     SQLiteToolEffectStore,
 )
+from agent_runtime_lab.tool_registry import (
+    ToolDefinition,
+    ToolRegistry,
+)
 
 
 class RecordingToolRunner:
+    """Record tool invocations and return a configured result."""
+
     def __init__(
         self,
         *,
@@ -35,7 +47,13 @@ class RecordingToolRunner:
         arguments: Mapping[str, Any],
         idempotency_key: str,
     ) -> Mapping[str, Any]:
-        self.calls.append((tool_name, dict(arguments), idempotency_key))
+        self.calls.append(
+            (
+                tool_name,
+                dict(arguments),
+                idempotency_key,
+            )
+        )
 
         if self.error is not None:
             raise self.error
@@ -43,12 +61,52 @@ class RecordingToolRunner:
         return self.output
 
 
+class SimulatedCrash(RuntimeError):
+    """Represent an abrupt stop at a durability boundary."""
+
+
+class CrashAtCheckpoint:
+    """Raise when execution reaches the selected checkpoint."""
+
+    def __init__(
+        self,
+        checkpoint: ExecutionCheckpoint,
+    ) -> None:
+        self._checkpoint = checkpoint
+
+    def reach(
+        self,
+        checkpoint: ExecutionCheckpoint,
+        *,
+        intent: ToolIntent,
+    ) -> None:
+        if checkpoint is self._checkpoint:
+            raise SimulatedCrash(f"crashed at {checkpoint.value}")
+
+
 def make_intent() -> ToolIntent:
     return ToolIntent.build(
         run_id="run-1",
         tool_call_id="tool-call-1",
         tool_name="append_file",
-        arguments={"path": "result.txt", "text": "hello"},
+        arguments={
+            "path": "result.txt",
+            "text": "hello",
+        },
+    )
+
+
+def make_registry(
+    *,
+    retry_is_idempotent: bool = False,
+) -> ToolRegistry:
+    return ToolRegistry(
+        [
+            ToolDefinition(
+                tool_name="append_file",
+                retry_is_idempotent=retry_is_idempotent,
+            )
+        ]
     )
 
 
@@ -59,12 +117,13 @@ def test_new_effect_persists_intent_before_successful_receipt(
     runner = RecordingToolRunner(output={"bytes_written": 5})
 
     with SQLiteToolEffectStore(tmp_path / "runtime.db") as store:
-        executor = DurableToolExecutor(store=store, runner=runner)
-
-        receipt = executor.execute(
-            intent=intent,
-            retry_is_idempotent=False,
+        executor = DurableToolExecutor(
+            store=store,
+            runner=runner,
+            registry=make_registry(),
         )
+
+        receipt = executor.execute(intent=intent)
 
         assert store.load_intent(intent.effect_id) == intent
         assert store.load_receipt(intent.effect_id) == receipt
@@ -74,7 +133,10 @@ def test_new_effect_persists_intent_before_successful_receipt(
     assert runner.calls == [
         (
             "append_file",
-            {"path": "result.txt", "text": "hello"},
+            {
+                "path": "result.txt",
+                "text": "hello",
+            },
             intent.idempotency_key,
         )
     ]
@@ -87,15 +149,14 @@ def test_completed_redelivery_returns_receipt_without_reexecution(
     runner = RecordingToolRunner(output={"bytes_written": 5})
 
     with SQLiteToolEffectStore(tmp_path / "runtime.db") as store:
-        executor = DurableToolExecutor(store=store, runner=runner)
-        first_receipt = executor.execute(
-            intent=intent,
-            retry_is_idempotent=False,
+        executor = DurableToolExecutor(
+            store=store,
+            runner=runner,
+            registry=make_registry(),
         )
-        second_receipt = executor.execute(
-            intent=intent,
-            retry_is_idempotent=False,
-        )
+
+        first_receipt = executor.execute(intent=intent)
+        second_receipt = executor.execute(intent=intent)
 
     assert second_receipt == first_receipt
     assert len(runner.calls) == 1
@@ -108,11 +169,13 @@ def test_tool_failure_is_persisted_as_failed_receipt(
     runner = RecordingToolRunner(error=RuntimeError("disk full"))
 
     with SQLiteToolEffectStore(tmp_path / "runtime.db") as store:
-        executor = DurableToolExecutor(store=store, runner=runner)
-        receipt = executor.execute(
-            intent=intent,
-            retry_is_idempotent=False,
+        executor = DurableToolExecutor(
+            store=store,
+            runner=runner,
+            registry=make_registry(),
         )
+
+        receipt = executor.execute(intent=intent)
 
         assert store.load_receipt(intent.effect_id) == receipt
 
@@ -121,6 +184,7 @@ def test_tool_failure_is_persisted_as_failed_receipt(
         "error_type": "RuntimeError",
         "message": "disk full",
     }
+    assert len(runner.calls) == 1
 
 
 def test_incomplete_non_idempotent_effect_is_not_reexecuted(
@@ -135,16 +199,17 @@ def test_incomplete_non_idempotent_effect_is_not_reexecuted(
     runner = RecordingToolRunner(output={"bytes_written": 5})
 
     with SQLiteToolEffectStore(database_path) as recovered_store:
-        executor = DurableToolExecutor(store=recovered_store, runner=runner)
+        executor = DurableToolExecutor(
+            store=recovered_store,
+            runner=runner,
+            registry=make_registry(),
+        )
 
         with pytest.raises(
             UnsafeToolRetryError,
             match="cannot be retried safely",
         ):
-            executor.execute(
-                intent=intent,
-                retry_is_idempotent=False,
-            )
+            executor.execute(intent=intent)
 
     assert runner.calls == []
 
@@ -161,36 +226,19 @@ def test_incomplete_idempotent_effect_is_retried_and_completed(
     runner = RecordingToolRunner(output={"bytes_written": 5})
 
     with SQLiteToolEffectStore(database_path) as recovered_store:
-        executor = DurableToolExecutor(store=recovered_store, runner=runner)
-        receipt = executor.execute(
-            intent=intent,
-            retry_is_idempotent=True,
+        executor = DurableToolExecutor(
+            store=recovered_store,
+            runner=runner,
+            registry=make_registry(retry_is_idempotent=True),
         )
+
+        receipt = executor.execute(intent=intent)
 
         assert recovered_store.load_receipt(intent.effect_id) == receipt
 
     assert receipt.outcome is ToolOutcome.SUCCEEDED
+    assert receipt.output == {"bytes_written": 5}
     assert len(runner.calls) == 1
-
-
-class SimulatedCrash(RuntimeError):
-    """Represent an abrupt stop at a durability boundary."""
-
-
-class CrashAtCheckpoint:
-    """Raise exactly once when execution reaches the selected checkpoint."""
-
-    def __init__(self, checkpoint: ExecutionCheckpoint) -> None:
-        self._checkpoint = checkpoint
-
-    def reach(
-        self,
-        checkpoint: ExecutionCheckpoint,
-        *,
-        intent: ToolIntent,
-    ) -> None:
-        if checkpoint is self._checkpoint:
-            raise SimulatedCrash(f"crashed at {checkpoint.value}")
 
 
 def test_crash_after_intent_leaves_tool_uninvoked(
@@ -204,6 +252,7 @@ def test_crash_after_intent_leaves_tool_uninvoked(
         executor = DurableToolExecutor(
             store=store,
             runner=runner,
+            registry=make_registry(),
             failure_injector=CrashAtCheckpoint(ExecutionCheckpoint.AFTER_INTENT_PERSISTED),
         )
 
@@ -211,10 +260,7 @@ def test_crash_after_intent_leaves_tool_uninvoked(
             SimulatedCrash,
             match="after_intent_persisted",
         ):
-            executor.execute(
-                intent=intent,
-                retry_is_idempotent=False,
-            )
+            executor.execute(intent=intent)
 
     assert runner.calls == []
 
@@ -234,6 +280,7 @@ def test_crash_after_tool_blocks_non_idempotent_reexecution(
         executor = DurableToolExecutor(
             store=store,
             runner=runner,
+            registry=make_registry(),
             failure_injector=CrashAtCheckpoint(ExecutionCheckpoint.AFTER_TOOL_INVOKED),
         )
 
@@ -241,10 +288,7 @@ def test_crash_after_tool_blocks_non_idempotent_reexecution(
             SimulatedCrash,
             match="after_tool_invoked",
         ):
-            executor.execute(
-                intent=intent,
-                retry_is_idempotent=False,
-            )
+            executor.execute(intent=intent)
 
     assert len(runner.calls) == 1
 
@@ -255,16 +299,14 @@ def test_crash_after_tool_blocks_non_idempotent_reexecution(
         recovered_executor = DurableToolExecutor(
             store=recovered_store,
             runner=runner,
+            registry=make_registry(),
         )
 
         with pytest.raises(
             UnsafeToolRetryError,
             match="cannot be retried safely",
         ):
-            recovered_executor.execute(
-                intent=intent,
-                retry_is_idempotent=False,
-            )
+            recovered_executor.execute(intent=intent)
 
     assert len(runner.calls) == 1
 
@@ -280,6 +322,7 @@ def test_crash_after_receipt_returns_persisted_result_on_recovery(
         executor = DurableToolExecutor(
             store=store,
             runner=runner,
+            registry=make_registry(),
             failure_injector=CrashAtCheckpoint(ExecutionCheckpoint.AFTER_RECEIPT_PERSISTED),
         )
 
@@ -287,10 +330,7 @@ def test_crash_after_receipt_returns_persisted_result_on_recovery(
             SimulatedCrash,
             match="after_receipt_persisted",
         ):
-            executor.execute(
-                intent=intent,
-                retry_is_idempotent=False,
-            )
+            executor.execute(intent=intent)
 
     assert len(runner.calls) == 1
 
@@ -298,14 +338,38 @@ def test_crash_after_receipt_returns_persisted_result_on_recovery(
         recovered_executor = DurableToolExecutor(
             store=recovered_store,
             runner=runner,
+            registry=make_registry(),
         )
-        receipt = recovered_executor.execute(
-            intent=intent,
-            retry_is_idempotent=False,
-        )
+
+        receipt = recovered_executor.execute(intent=intent)
 
         assert recovered_store.load_receipt(intent.effect_id) == receipt
 
     assert receipt.outcome is ToolOutcome.SUCCEEDED
     assert receipt.output == {"bytes_written": 5}
     assert len(runner.calls) == 1
+
+
+def test_unknown_tool_is_rejected_before_intent_is_persisted(
+    tmp_path: Path,
+) -> None:
+    intent = make_intent()
+    runner = RecordingToolRunner(output={"bytes_written": 5})
+
+    with SQLiteToolEffectStore(tmp_path / "runtime.db") as store:
+        executor = DurableToolExecutor(
+            store=store,
+            runner=runner,
+            registry=ToolRegistry([]),
+        )
+
+        with pytest.raises(
+            UnknownToolError,
+            match="is not registered",
+        ):
+            executor.execute(intent=intent)
+
+        assert store.load_intent(intent.effect_id) is None
+        assert store.load_receipt(intent.effect_id) is None
+
+    assert runner.calls == []

@@ -14,6 +14,7 @@ from agent_runtime_lab.domain.tool_effects import (
     ToolReceipt,
     decide_recovery,
 )
+from agent_runtime_lab.tool_registry import ToolRegistry
 
 
 class ToolEffectStore(Protocol):
@@ -73,20 +74,22 @@ class DurableToolExecutor:
         *,
         store: ToolEffectStore,
         runner: ToolRunner,
+        registry: ToolRegistry,
         failure_injector: FailureInjector | None = None,
     ) -> None:
         self._store = store
         self._runner = runner
+        self._registry = registry
         self._failure_injector = failure_injector
 
     def execute(
         self,
         *,
         intent: ToolIntent,
-        retry_is_idempotent: bool,
     ) -> ToolReceipt:
         """Execute a new effect or safely resolve a durable redelivery."""
 
+        definition = self._registry.resolve(intent.tool_name)
         persisted_intent = self._store.load_intent(intent.effect_id)
 
         if persisted_intent is None:
@@ -105,7 +108,7 @@ class DurableToolExecutor:
             decision = decide_recovery(
                 intent=persisted_intent,
                 receipt=None,
-                retry_is_idempotent=retry_is_idempotent,
+                retry_is_idempotent=definition.retry_is_idempotent,
             )
             if decision is RecoveryDecision.UNKNOWN:
                 raise UnsafeToolRetryError(

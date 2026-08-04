@@ -33,6 +33,14 @@ class UnsafeToolRetryError(RuntimeContractError):
     """An incomplete non-idempotent tool effect cannot be retried safely."""
 
 
+class UnknownToolError(RuntimeContractError):
+    """A requested tool is not registered with the runtime."""
+
+
+class DuplicateToolDefinitionError(RuntimeContractError):
+    """A tool name cannot have multiple trusted definitions."""
+
+
 class InvalidTransitionError(RuntimeContractError):
     """An event cannot be applied in the current state."""
 
