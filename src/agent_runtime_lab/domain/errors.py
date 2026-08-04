@@ -21,6 +21,14 @@ class DuplicateEventConflictError(RuntimeContractError):
     """An event ID was reused with different content."""
 
 
+class DuplicateToolEffectConflictError(RuntimeContractError):
+    """A tool-effect identity was reused with different content."""
+
+
+class MissingToolIntentError(RuntimeContractError):
+    """A receipt was persisted before its corresponding intent."""
+
+
 class InvalidTransitionError(RuntimeContractError):
     """An event cannot be applied in the current state."""
 
