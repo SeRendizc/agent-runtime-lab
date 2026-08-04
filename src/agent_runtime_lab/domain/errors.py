@@ -29,6 +29,10 @@ class MissingToolIntentError(RuntimeContractError):
     """A receipt was persisted before its corresponding intent."""
 
 
+class UnsafeToolRetryError(RuntimeContractError):
+    """An incomplete non-idempotent tool effect cannot be retried safely."""
+
+
 class InvalidTransitionError(RuntimeContractError):
     """An event cannot be applied in the current state."""
 
