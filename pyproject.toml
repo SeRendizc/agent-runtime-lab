@@ -8,13 +8,14 @@ version = "0.1.0"
 description = "Reliability infrastructure experiments for agentic LLM execution"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pydantic>=2.8,<3.0",
+]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0,<10.0",
-    "ruff>=0.8,<1.0",
-    "pydantic>=2.8,<3.0"
+    "ruff>=0.8,<1.0"
 ]
 
 [tool.setuptools]
