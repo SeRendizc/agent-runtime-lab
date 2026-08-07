@@ -71,11 +71,7 @@ class OwnershipPolicy(BaseModel):
     ) -> tuple[OwnershipRule, ...]:
         """Return rules whose risk tags intersect the effective risks."""
 
-        return tuple(
-            rule
-            for rule in self.rules
-            if rule.risk_tags & effective_tags
-        )
+        return tuple(rule for rule in self.rules if rule.risk_tags & effective_tags)
 
     def minimum_mode_for(
         self,
@@ -99,10 +95,7 @@ class OwnershipPolicy(BaseModel):
         matched = self.matching_rules(effective_tags)
 
         if not matched:
-            return (
-                f"no risk rule matched; using default "
-                f"{self.default_mode.value}",
-            )
+            return (f"no risk rule matched; using default {self.default_mode.value}",)
 
         return tuple(rule.reason for rule in matched)
 
@@ -138,5 +131,31 @@ def classify_step(
 ) -> OwnershipDecision:
     """Classify a step using trusted risks and policy constraints."""
 
-    # 这部分由你亲自完成。
-    raise NotImplementedError
+    assessment = context.risk_evaluator.evaluate(step)
+
+    policy_mode = context.policy.minimum_mode_for(
+        assessment.effective_tags,
+    )
+
+    final_mode = _more_restrictive(
+        policy_mode,
+        context.minimum_mode,
+    )
+
+    reasons = list(
+        context.policy.reasons_for(
+            assessment.effective_tags,
+        )
+    )
+
+    if context.minimum_mode != OwnershipMode.AUTO:
+        reasons.append(f"global minimum mode requires {context.minimum_mode.value}")
+
+    return OwnershipDecision(
+        step_id=step.step_id,
+        mode=final_mode,
+        policy_minimum_mode=policy_mode,
+        context_minimum_mode=context.minimum_mode,
+        risk_assessment=assessment,
+        reasons=tuple(reasons),
+    )
