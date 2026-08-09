@@ -9,11 +9,24 @@ duplicating tool effects or bypassing user gates.
 
 ## Current status
 
-The S0/R1 deterministic core is implemented: immutable execution events,
-immutable run state, a pure lifecycle reducer, duplicate-delivery protection,
-terminal-state enforcement, and ordered replay. This does not yet claim durable
-database persistence, external side-effect idempotency, crash recovery,
-sandboxing, worker orchestration, or production readiness.
+The active development branch is `durable-tool-execution-recovery`. The
+deterministic R1 core, durable R2 tool-effect path, and R3.1 ownership step
+classification are implemented and verified on that branch.
+
+Current evidence at `4b4146f`:
+
+- immutable events, run state, lifecycle reduction, and ordered replay;
+- SQLite tool intents and receipts with crash-window recovery;
+- Runtime-owned tool registry and fail-closed unsafe retry handling;
+- structured `PlanStep` contracts and trusted risk derivation;
+- ownership policy with `AUTO < PAIR < USER_GATE`;
+- deterministic `classify_step` decisions with explainable policy and context
+  minimums;
+- 75 tests pass, Ruff passes, and 30 files pass the format check.
+
+These changes have been pushed to the development branch but are not claimed
+as merged to `main`. The runtime is still a validation spike, not a production
+sandbox or a complete agent loop.
 
 The intended scope is:
 
@@ -27,6 +40,25 @@ The intended scope is:
 
 CodeOwnership is planned as a flagship policy and demonstration skill, not as a
 second general-purpose coding agent.
+
+## Ownership boundary
+
+Plan classification and tool authorization are intentionally separate:
+
+```text
+PlanStep
+  -> trusted risk derivation
+  -> OwnershipDecision
+  -> AUTO / PAIR / USER_GATE minimum
+
+Real ToolRequest
+  -> authorize again using the actual tool, arguments, and target paths
+  -> allow / deny / escalate
+```
+
+`OwnershipDecision` is not an authorization token. The next milestone is R3.2:
+define and implement `ToolRequest.authorize`, then connect it to the reducer and
+durable execution path.
 
 ## Relationship to the other labs
 
@@ -49,9 +81,10 @@ Agent Runtime Lab targets Python 3.11 or newer.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
+python -m pytest -q
+python -m ruff check src tests
+python -m ruff format --check src tests
 ```
 
-The next milestone adds SQLite event persistence and explicit tool
-intent/receipt records before any broad agent loop or tool surface.
-
-See [docs/progress.md](docs/progress.md) for the current evidence-backed status.
+See [docs/progress.md](docs/progress.md) for the evidence-backed milestone
+history and current next step.
