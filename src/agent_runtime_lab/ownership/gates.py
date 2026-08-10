@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from enum import StrEnum
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agent_runtime_lab.domain.errors import EventValidationError
+from agent_runtime_lab.domain.errors import (
+    DeveloperOwnedImplementationRequired,
+    EventValidationError,
+)
 from agent_runtime_lab.ownership.authorization import (
     AuthorizationDecision,
     AuthorizationOutcome,
@@ -22,6 +27,14 @@ class GateAction(StrEnum):
 
     APPROVE = "approve"
     REJECT = "reject"
+
+
+class GateEvaluationOutcome(StrEnum):
+    """Possible results of evaluating one USER_GATE answer."""
+
+    PASS = "pass"
+    RETRY = "retry"
+    BLOCK = "block"
 
 
 class GateReference(BaseModel):
@@ -151,3 +164,73 @@ class GateResolution(BaseModel):
             actor=actor,
             reason=reason,
         )
+
+
+class GateAnswerSubmission(BaseModel):
+    """One immutable USER_GATE answer bound to an exact proposal."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reference: GateReference
+    actor: str = Field(min_length=1)
+    answer_json: str
+
+    @field_validator("answer_json")
+    @classmethod
+    def validate_answer_json(cls, value: str) -> str:
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("answer_json must be valid JSON") from exc
+        if not isinstance(decoded, dict):
+            raise ValueError("answer_json must encode a JSON object")
+        return json.dumps(
+            decoded,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @classmethod
+    def build(
+        cls,
+        reference: GateReference,
+        *,
+        actor: str,
+        answer: Mapping[str, Any],
+    ) -> GateAnswerSubmission:
+        try:
+            answer_json = json.dumps(
+                dict(answer),
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        except (TypeError, ValueError) as exc:
+            raise EventValidationError("gate answer must contain valid JSON values") from exc
+        return cls(reference=reference, actor=actor, answer_json=answer_json)
+
+    @property
+    def answer(self) -> dict[str, Any]:
+        return json.loads(self.answer_json)
+
+
+class GateEvaluation(BaseModel):
+    """Persistable decision produced for one USER_GATE attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    outcome: GateEvaluationOutcome
+    reason: str = Field(min_length=1)
+
+
+def evaluate_gate(
+    gate: GateProposal,
+    answer: Mapping[str, Any],
+) -> GateEvaluation:
+    """Evaluate a USER_GATE answer at the developer-owned learning boundary."""
+
+    del gate, answer
+    raise DeveloperOwnedImplementationRequired("Lucas must implement evaluate_gate(gate, answer)")

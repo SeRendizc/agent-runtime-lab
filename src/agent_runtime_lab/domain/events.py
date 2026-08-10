@@ -25,6 +25,7 @@ class EventType(StrEnum):
     TOOL_DENIED = "tool.denied"
     GATE_APPROVED = "gate.approved"
     GATE_REJECTED = "gate.rejected"
+    GATE_EVALUATED = "gate.evaluated"
     TOOL_STARTED = "tool.started"
     TOOL_SUCCEEDED = "tool.succeeded"
     TOOL_FAILED = "tool.failed"

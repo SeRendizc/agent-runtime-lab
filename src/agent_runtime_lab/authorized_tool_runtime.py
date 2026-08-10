@@ -23,10 +23,15 @@ from agent_runtime_lab.ownership.authorization import (
 )
 from agent_runtime_lab.ownership.gates import (
     GateAction,
+    GateAnswerSubmission,
+    GateEvaluation,
+    GateEvaluationOutcome,
     GateProposal,
     GateReference,
     GateResolution,
+    evaluate_gate,
 )
+from agent_runtime_lab.ownership.policy import OwnershipMode
 
 
 class EventStore(Protocol):
@@ -45,6 +50,8 @@ class RuntimeToolOutcome(StrEnum):
     EXECUTED = "executed"
     DENIED = "denied"
     AWAITING_GATE = "awaiting_gate"
+    GATE_RETRY = "gate_retry"
+    BLOCKED = "blocked"
     REJECTED = "rejected"
 
 
@@ -56,6 +63,8 @@ class RuntimeToolResult:
     state: RunState
     authorization: AuthorizationDecision | None = None
     gate_proposal: GateProposal | None = None
+    gate_evaluation: GateEvaluation | None = None
+    gate_attempt: int | None = None
     receipt: ToolReceipt | None = None
 
 
@@ -72,11 +81,17 @@ class AuthorizedToolRuntime:
         event_store: EventStore,
         executor: DurableToolExecutor,
         authorization_context: AuthorizationContext,
+        gate_evaluator: Callable[[GateProposal, Mapping[str, Any]], GateEvaluation] = evaluate_gate,
+        user_gate_max_attempts: int = 3,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
+        if user_gate_max_attempts < 1:
+            raise ValueError("user_gate_max_attempts must be positive")
         self._event_store = event_store
         self._executor = executor
         self._authorization_context = authorization_context
+        self._gate_evaluator = gate_evaluator
+        self._user_gate_max_attempts = user_gate_max_attempts
         self._clock = clock
 
     def submit(self, request: ToolRequest) -> RuntimeToolResult:
@@ -115,16 +130,19 @@ class AuthorizedToolRuntime:
                 decision=decision,
                 revision=1,
             )
+            escalation_payload: dict[str, Any] = {
+                "ownership_mode": proposal.ownership_mode.value,
+                "proposal_digest": proposal.reference.proposal_digest,
+                "reasons": list(proposal.reasons),
+                "revision": proposal.reference.revision,
+                "tool_call_id": request.tool_call_id,
+            }
+            if proposal.ownership_mode is OwnershipMode.USER_GATE:
+                escalation_payload["max_attempts"] = self._user_gate_max_attempts
             state = self._append(
                 request.run_id,
                 EventType.TOOL_ESCALATED,
-                {
-                    "ownership_mode": proposal.ownership_mode.value,
-                    "proposal_digest": proposal.reference.proposal_digest,
-                    "reasons": list(proposal.reasons),
-                    "revision": proposal.reference.revision,
-                    "tool_call_id": request.tool_call_id,
-                },
+                escalation_payload,
             )
             return RuntimeToolResult(
                 outcome=RuntimeToolOutcome.AWAITING_GATE,
@@ -145,6 +163,13 @@ class AuthorizedToolRuntime:
 
         state = self.load_state(resolution.reference.run_id)
         self._validate_reference(state, resolution.reference)
+        if (
+            resolution.action is GateAction.APPROVE
+            and state.active_gate_mode == OwnershipMode.USER_GATE.value
+        ):
+            raise InvalidTransitionError(
+                "USER_GATE approval requires an evaluated answer, not GateResolution.approve"
+            )
         request = self._load_active_request(
             resolution.reference.run_id,
             resolution.reference.tool_call_id,
@@ -192,6 +217,91 @@ class AuthorizedToolRuntime:
         )
         return self._execute(request, authorization=current_decision)
 
+    def submit_gate_answer(self, submission: GateAnswerSubmission) -> RuntimeToolResult:
+        """Evaluate and persist one USER_GATE attempt for the exact proposal."""
+
+        state = self.load_state(submission.reference.run_id)
+        self._validate_reference(state, submission.reference)
+        if state.active_gate_mode != OwnershipMode.USER_GATE.value:
+            raise InvalidTransitionError("gate answers are only valid for USER_GATE")
+        if state.active_gate_max_attempts is None:
+            raise InvalidTransitionError("active USER_GATE has no attempt limit")
+
+        request = self._load_active_request(
+            submission.reference.run_id,
+            submission.reference.tool_call_id,
+        )
+        proposal = self._load_active_proposal(request, submission.reference)
+        current_decision = authorize(request, self._authorization_context)
+        if current_decision.outcome is AuthorizationOutcome.DENY:
+            raise GateReferenceMismatchError(
+                "active proposal is no longer allowed by current authorization policy"
+            )
+        if current_decision.outcome is AuthorizationOutcome.ESCALATE:
+            current_proposal = GateProposal.build(
+                request=request,
+                decision=current_decision,
+                revision=submission.reference.revision,
+            )
+            if current_proposal.reference != submission.reference:
+                raise GateReferenceMismatchError(
+                    "active proposal no longer matches current authorization policy"
+                )
+
+        evaluation = self._gate_evaluator(proposal, submission.answer)
+        if not isinstance(evaluation, GateEvaluation):
+            raise TypeError("gate_evaluator must return GateEvaluation")
+        attempt = state.active_gate_attempts + 1
+        if (
+            evaluation.outcome is GateEvaluationOutcome.RETRY
+            and attempt >= state.active_gate_max_attempts
+        ):
+            evaluation = GateEvaluation(
+                outcome=GateEvaluationOutcome.BLOCK,
+                reason=f"attempt limit exhausted: {evaluation.reason}",
+            )
+
+        evaluated_state = self._append(
+            submission.reference.run_id,
+            EventType.GATE_EVALUATED,
+            {
+                "actor": submission.actor,
+                "answer_json": submission.answer_json,
+                "attempt": attempt,
+                "max_attempts": state.active_gate_max_attempts,
+                "outcome": evaluation.outcome.value,
+                "proposal_digest": submission.reference.proposal_digest,
+                "reason": evaluation.reason,
+                "revision": submission.reference.revision,
+                "tool_call_id": submission.reference.tool_call_id,
+            },
+        )
+
+        if evaluation.outcome is GateEvaluationOutcome.PASS:
+            return self._execute(
+                request,
+                authorization=current_decision,
+                gate_evaluation=evaluation,
+                gate_attempt=attempt,
+            )
+        if evaluation.outcome is GateEvaluationOutcome.RETRY:
+            return RuntimeToolResult(
+                outcome=RuntimeToolOutcome.GATE_RETRY,
+                state=evaluated_state,
+                authorization=current_decision,
+                gate_proposal=proposal,
+                gate_evaluation=evaluation,
+                gate_attempt=attempt,
+            )
+        return RuntimeToolResult(
+            outcome=RuntimeToolOutcome.BLOCKED,
+            state=evaluated_state,
+            authorization=current_decision,
+            gate_proposal=proposal,
+            gate_evaluation=evaluation,
+            gate_attempt=attempt,
+        )
+
     def recover(self, run_id: str) -> RuntimeToolResult:
         """Continue an approved or already-started durable effect after restart."""
 
@@ -219,6 +329,8 @@ class AuthorizedToolRuntime:
         request: ToolRequest,
         *,
         authorization: AuthorizationDecision | None = None,
+        gate_evaluation: GateEvaluation | None = None,
+        gate_attempt: int | None = None,
         append_started: bool = True,
     ) -> RuntimeToolResult:
         if append_started:
@@ -261,6 +373,8 @@ class AuthorizedToolRuntime:
             outcome=RuntimeToolOutcome.EXECUTED,
             state=state,
             authorization=authorization,
+            gate_evaluation=gate_evaluation,
+            gate_attempt=gate_attempt,
             receipt=receipt,
         )
 
@@ -297,6 +411,31 @@ class AuthorizedToolRuntime:
                 arguments_json=self._payload_text(event.payload, "arguments_json"),
             )
         raise GateReferenceMismatchError("active gate has no matching persisted tool request")
+
+    def _load_active_proposal(
+        self,
+        request: ToolRequest,
+        reference: GateReference,
+    ) -> GateProposal:
+        for event in reversed(self._event_store.load(request.run_id)):
+            if event.event_type is not EventType.TOOL_ESCALATED:
+                continue
+            if event.payload.get("tool_call_id") != request.tool_call_id:
+                continue
+            reasons = event.payload.get("reasons")
+            if not isinstance(reasons, list) or not all(
+                isinstance(reason, str) and reason for reason in reasons
+            ):
+                raise GateReferenceMismatchError("persisted gate has invalid reasons")
+            return GateProposal(
+                reference=reference,
+                step_id=request.step_id,
+                tool_name=request.tool_name,
+                arguments_json=request.arguments_json,
+                ownership_mode=OwnershipMode(self._payload_text(event.payload, "ownership_mode")),
+                reasons=tuple(reasons),
+            )
+        raise GateReferenceMismatchError("active gate has no persisted proposal")
 
     @staticmethod
     def _payload_text(payload: Mapping[str, Any], field: str) -> str:

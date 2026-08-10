@@ -35,6 +35,8 @@ class RunState:
     active_gate_proposal_digest: str | None = None
     active_gate_revision: int | None = None
     active_gate_mode: str | None = None
+    active_gate_attempts: int = 0
+    active_gate_max_attempts: int | None = None
     failure_reason: str | None = None
     applied_event_fingerprints: tuple[tuple[str, str], ...] = ()
 

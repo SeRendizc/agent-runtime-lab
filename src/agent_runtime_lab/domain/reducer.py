@@ -70,6 +70,8 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             active_gate_proposal_digest=None,
             active_gate_revision=None,
             active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
             failure_reason=None,
         )
 
@@ -112,23 +114,83 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             raise InvalidTransitionError(
                 "tool.escalated requires pair or user_gate payload.ownership_mode"
             )
+        max_attempts = None
+        if ownership_mode == "user_gate":
+            max_attempts = _required_positive_int(event, "max_attempts")
         return replace(
             state,
             status=RunStatus.AWAITING_GATE,
             active_gate_proposal_digest=proposal_digest,
             active_gate_revision=revision,
             active_gate_mode=ownership_mode,
+            active_gate_attempts=0,
+            active_gate_max_attempts=max_attempts,
         )
 
     if event.event_type is EventType.GATE_APPROVED:
         _expect(state, RunStatus.AWAITING_GATE, event)
         _expect_active_gate(state, event)
+        if state.active_gate_mode != "pair":
+            raise InvalidTransitionError(
+                "gate.approved requires pair mode; user_gate requires evaluation"
+            )
         return replace(
             state,
             status=RunStatus.TOOL_READY,
             active_gate_proposal_digest=None,
             active_gate_revision=None,
             active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
+        )
+
+    if event.event_type is EventType.GATE_EVALUATED:
+        _expect(state, RunStatus.AWAITING_GATE, event)
+        _expect_active_gate(state, event)
+        if state.active_gate_mode != "user_gate":
+            raise InvalidTransitionError("gate.evaluated requires an active user_gate")
+
+        attempt = _required_positive_int(event, "attempt")
+        max_attempts = _required_positive_int(event, "max_attempts")
+        if max_attempts != state.active_gate_max_attempts:
+            raise InvalidTransitionError("gate.evaluated max_attempts changed")
+        if attempt != state.active_gate_attempts + 1:
+            raise InvalidTransitionError(
+                "gate.evaluated attempt must increment the durable attempt count"
+            )
+
+        outcome = _required_text(event, "outcome")
+        reason = _required_text(event, "reason")
+        if outcome == "retry":
+            if attempt >= max_attempts:
+                raise InvalidTransitionError(
+                    "gate.evaluated cannot retry after exhausting attempts"
+                )
+            return replace(state, active_gate_attempts=attempt)
+        if outcome == "pass":
+            return replace(
+                state,
+                status=RunStatus.TOOL_READY,
+                active_gate_proposal_digest=None,
+                active_gate_revision=None,
+                active_gate_mode=None,
+                active_gate_attempts=0,
+                active_gate_max_attempts=None,
+            )
+        if outcome == "block":
+            return replace(
+                state,
+                status=RunStatus.FAILED,
+                active_tool_call_id=None,
+                active_gate_proposal_digest=None,
+                active_gate_revision=None,
+                active_gate_mode=None,
+                active_gate_attempts=0,
+                active_gate_max_attempts=None,
+                failure_reason=reason,
+            )
+        raise InvalidTransitionError(
+            "gate.evaluated requires pass, retry, or block payload.outcome"
         )
 
     if event.event_type is EventType.GATE_REJECTED:
@@ -142,6 +204,8 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             active_gate_proposal_digest=None,
             active_gate_revision=None,
             active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
             failure_reason=reason,
         )
 
@@ -156,6 +220,8 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             active_gate_proposal_digest=None,
             active_gate_revision=None,
             active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
             failure_reason=reason,
         )
 
@@ -174,6 +240,8 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             active_gate_proposal_digest=None,
             active_gate_revision=None,
             active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
         )
 
     if event.event_type is EventType.TOOL_FAILED:
@@ -187,6 +255,8 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             active_gate_proposal_digest=None,
             active_gate_revision=None,
             active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
             failure_reason=reason,
         )
 

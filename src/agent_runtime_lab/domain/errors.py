@@ -49,5 +49,9 @@ class GateReferenceMismatchError(RuntimeContractError):
     """A gate resolution does not identify the active durable proposal."""
 
 
+class DeveloperOwnedImplementationRequired(RuntimeContractError):
+    """A developer-owned learning boundary has not been implemented yet."""
+
+
 class TerminalStateError(RuntimeContractError):
     """A new event attempted to mutate a terminal run."""

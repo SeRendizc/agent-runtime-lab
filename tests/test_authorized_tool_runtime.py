@@ -11,7 +11,11 @@ from agent_runtime_lab.authorized_tool_runtime import (
     AuthorizedToolRuntime,
     RuntimeToolOutcome,
 )
-from agent_runtime_lab.domain.errors import GateReferenceMismatchError
+from agent_runtime_lab.domain.errors import (
+    DeveloperOwnedImplementationRequired,
+    GateReferenceMismatchError,
+    InvalidTransitionError,
+)
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
 from agent_runtime_lab.domain.state import RunStatus
 from agent_runtime_lab.domain.tool_effects import derive_effect_id
@@ -21,7 +25,14 @@ from agent_runtime_lab.ownership.authorization import (
     ToolRequest,
     WorkspaceBoundary,
 )
-from agent_runtime_lab.ownership.gates import GateResolution
+from agent_runtime_lab.ownership.gates import (
+    GateAnswerSubmission,
+    GateEvaluation,
+    GateEvaluationOutcome,
+    GateProposal,
+    GateResolution,
+    evaluate_gate,
+)
 from agent_runtime_lab.ownership.policy import (
     OwnershipMode,
     OwnershipPolicy,
@@ -140,6 +151,8 @@ def make_runtime(
     database_path: Path,
     workspace_root: Path,
     runner: RecordingToolRunner,
+    gate_evaluator: Any = evaluate_gate,
+    user_gate_max_attempts: int = 3,
 ) -> tuple[AuthorizedToolRuntime, SQLiteEventStore, SQLiteToolEffectStore]:
     registry = make_registry()
     event_store = SQLiteEventStore(database_path)
@@ -153,6 +166,8 @@ def make_runtime(
         event_store=event_store,
         executor=executor,
         authorization_context=make_authorization_context(workspace_root, registry),
+        gate_evaluator=gate_evaluator,
+        user_gate_max_attempts=user_gate_max_attempts,
         clock=lambda: NOW,
     )
     return runtime, event_store, effect_store
@@ -368,3 +383,254 @@ def test_user_gate_rejection_is_durable_and_never_executes(tmp_path: Path) -> No
 
     event_store.close()
     effect_store.close()
+
+
+def test_default_gate_evaluator_preserves_developer_owned_boundary(tmp_path: Path) -> None:
+    runner = RecordingToolRunner()
+    runtime, event_store, effect_store = make_runtime(
+        database_path=tmp_path / "runtime.db",
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    initialize_run(event_store)
+    paused = runtime.submit(make_request(tool_name="delete_file"))
+    assert paused.gate_proposal is not None
+
+    with pytest.raises(DeveloperOwnedImplementationRequired, match="Lucas"):
+        runtime.submit_gate_answer(
+            GateAnswerSubmission.build(
+                paused.gate_proposal.reference,
+                actor="lucas",
+                answer={"explanation": "I understand the deletion risk"},
+            )
+        )
+
+    assert runtime.load_state("run-1").active_gate_attempts == 0
+    assert runner.calls == []
+    event_store.close()
+    effect_store.close()
+
+
+def test_pair_and_user_gate_use_distinct_resolution_paths(tmp_path: Path) -> None:
+    runner = RecordingToolRunner()
+    runtime, event_store, effect_store = make_runtime(
+        database_path=tmp_path / "runtime.db",
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    initialize_run(event_store)
+    pair = runtime.submit(make_request(tool_name="write_file"))
+    assert pair.gate_proposal is not None
+
+    with pytest.raises(InvalidTransitionError, match="only valid for USER_GATE"):
+        runtime.submit_gate_answer(
+            GateAnswerSubmission.build(
+                pair.gate_proposal.reference,
+                actor="lucas",
+                answer={"explanation": "not a pair approval"},
+            )
+        )
+
+    event_store.close()
+    effect_store.close()
+
+    runner = RecordingToolRunner()
+    runtime, event_store, effect_store = make_runtime(
+        database_path=tmp_path / "user-gate.db",
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    initialize_run(event_store)
+    user_gate = runtime.submit(make_request(tool_name="delete_file"))
+    assert user_gate.gate_proposal is not None
+
+    with pytest.raises(InvalidTransitionError, match="evaluated answer"):
+        runtime.resolve_gate(
+            GateResolution.approve(user_gate.gate_proposal.reference, actor="lucas")
+        )
+
+    assert runtime.load_state("run-1").status is RunStatus.AWAITING_GATE
+    assert runner.calls == []
+    event_store.close()
+    effect_store.close()
+
+
+class SequencedGateEvaluator:
+    def __init__(self, *evaluations: GateEvaluation) -> None:
+        self._evaluations = list(evaluations)
+        self.calls: list[tuple[GateProposal, dict[str, Any]]] = []
+
+    def __call__(
+        self,
+        gate: GateProposal,
+        answer: Mapping[str, Any],
+    ) -> GateEvaluation:
+        self.calls.append((gate, dict(answer)))
+        return self._evaluations.pop(0)
+
+
+def test_user_gate_retry_survives_restart_then_passes_exact_request(tmp_path: Path) -> None:
+    database_path = tmp_path / "runtime.db"
+    runner = RecordingToolRunner()
+    first_evaluator = SequencedGateEvaluator(
+        GateEvaluation(
+            outcome=GateEvaluationOutcome.RETRY,
+            reason="explanation misses the rollback consequence",
+        )
+    )
+    runtime, event_store, effect_store = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+        gate_evaluator=first_evaluator,
+    )
+    initialize_run(event_store)
+    paused = runtime.submit(make_request(tool_name="delete_file"))
+    assert paused.gate_proposal is not None
+    reference = paused.gate_proposal.reference
+
+    retry = runtime.submit_gate_answer(
+        GateAnswerSubmission.build(
+            reference,
+            actor="lucas",
+            answer={"explanation": "it deletes the file"},
+        )
+    )
+
+    assert retry.outcome is RuntimeToolOutcome.GATE_RETRY
+    assert retry.state.status is RunStatus.AWAITING_GATE
+    assert retry.state.active_gate_attempts == 1
+    assert retry.state.active_gate_max_attempts == 3
+    assert retry.gate_attempt == 1
+    assert runner.calls == []
+    event_store.close()
+    effect_store.close()
+
+    second_evaluator = SequencedGateEvaluator(
+        GateEvaluation(
+            outcome=GateEvaluationOutcome.PASS,
+            reason="risk and rollback consequence are both explained",
+        )
+    )
+    recovered, recovered_events, recovered_effects = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+        gate_evaluator=second_evaluator,
+    )
+    assert recovered.load_state("run-1").active_gate_attempts == 1
+
+    passed = recovered.submit_gate_answer(
+        GateAnswerSubmission.build(
+            reference,
+            actor="lucas",
+            answer={"explanation": "deletion removes data and may require backup restoration"},
+        )
+    )
+
+    assert passed.outcome is RuntimeToolOutcome.EXECUTED
+    assert passed.gate_evaluation is not None
+    assert passed.gate_evaluation.outcome is GateEvaluationOutcome.PASS
+    assert passed.gate_attempt == 2
+    assert len(runner.calls) == 1
+    assert runner.calls[0][0:2] == ("delete_file", {"path": "README.md"})
+    assert [event.event_type for event in recovered_events.load("run-1")][-3:] == [
+        EventType.GATE_EVALUATED,
+        EventType.TOOL_STARTED,
+        EventType.TOOL_SUCCEEDED,
+    ]
+    recovered_events.close()
+    recovered_effects.close()
+
+
+def test_user_gate_retry_exhaustion_blocks_without_tool_effect(tmp_path: Path) -> None:
+    runner = RecordingToolRunner()
+    evaluator = SequencedGateEvaluator(
+        GateEvaluation(outcome=GateEvaluationOutcome.RETRY, reason="missing consequence"),
+        GateEvaluation(outcome=GateEvaluationOutcome.RETRY, reason="still incomplete"),
+    )
+    runtime, event_store, effect_store = make_runtime(
+        database_path=tmp_path / "runtime.db",
+        workspace_root=tmp_path,
+        runner=runner,
+        gate_evaluator=evaluator,
+        user_gate_max_attempts=2,
+    )
+    initialize_run(event_store)
+    paused = runtime.submit(make_request(tool_name="delete_file"))
+    assert paused.gate_proposal is not None
+    reference = paused.gate_proposal.reference
+
+    first = runtime.submit_gate_answer(
+        GateAnswerSubmission.build(reference, actor="lucas", answer={"answer": "one"})
+    )
+    second = runtime.submit_gate_answer(
+        GateAnswerSubmission.build(reference, actor="lucas", answer={"answer": "two"})
+    )
+
+    assert first.outcome is RuntimeToolOutcome.GATE_RETRY
+    assert second.outcome is RuntimeToolOutcome.BLOCKED
+    assert second.state.status is RunStatus.FAILED
+    assert second.state.failure_reason == "attempt limit exhausted: still incomplete"
+    assert second.gate_evaluation is not None
+    assert second.gate_evaluation.outcome is GateEvaluationOutcome.BLOCK
+    assert runner.calls == []
+    assert effect_store.load_intent(derive_effect_id(run_id="run-1", tool_call_id="call-1")) is None
+    event_store.close()
+    effect_store.close()
+
+
+def test_passed_user_gate_recovers_if_process_stops_before_tool_start(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "runtime.db"
+    runner = RecordingToolRunner()
+    runtime, event_store, effect_store = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    initialize_run(event_store)
+    paused = runtime.submit(make_request(tool_name="delete_file"))
+    assert paused.gate_proposal is not None
+    reference = paused.gate_proposal.reference
+
+    event_store.append(
+        ExecutionEvent.build(
+            event_id="run-1:4:gate.evaluated",
+            run_id="run-1",
+            sequence=4,
+            event_type=EventType.GATE_EVALUATED,
+            occurred_at=NOW,
+            payload={
+                "actor": "lucas",
+                "answer_json": '{"explanation":"understood"}',
+                "attempt": 1,
+                "max_attempts": 3,
+                "outcome": "pass",
+                "proposal_digest": reference.proposal_digest,
+                "reason": "accepted before simulated restart",
+                "revision": reference.revision,
+                "tool_call_id": reference.tool_call_id,
+            },
+        )
+    )
+    assert runtime.load_state("run-1").status is RunStatus.TOOL_READY
+    event_store.close()
+    effect_store.close()
+
+    recovered, recovered_events, recovered_effects = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    result = recovered.recover("run-1")
+
+    assert result.state.status is RunStatus.VERIFYING
+    assert len(runner.calls) == 1
+    assert [event.event_type for event in recovered_events.load("run-1")][-2:] == [
+        EventType.TOOL_STARTED,
+        EventType.TOOL_SUCCEEDED,
+    ]
+    recovered_events.close()
+    recovered_effects.close()

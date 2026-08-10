@@ -210,11 +210,99 @@ def test_gate_approval_must_match_active_proposal_revision() -> None:
                 "proposal_digest": "a" * 64,
                 "revision": 2,
                 "ownership_mode": "user_gate",
+                "max_attempts": 3,
             },
         ),
     )
 
     with pytest.raises(InvalidTransitionError, match="revision"):
+        reduce(
+            state,
+            event(
+                4,
+                EventType.GATE_APPROVED,
+                payload={
+                    "tool_call_id": "tool-1",
+                    "proposal_digest": "a" * 64,
+                    "revision": 1,
+                },
+            ),
+        )
+
+
+def test_user_gate_attempts_are_durable_and_exhaustion_is_fail_closed() -> None:
+    state = apply(
+        ready_state(),
+        event(2, EventType.TOOL_REQUESTED, payload={"tool_call_id": "tool-1"}),
+        event(
+            3,
+            EventType.TOOL_ESCALATED,
+            payload={
+                "tool_call_id": "tool-1",
+                "proposal_digest": "a" * 64,
+                "revision": 1,
+                "ownership_mode": "user_gate",
+                "max_attempts": 2,
+            },
+        ),
+        event(
+            4,
+            EventType.GATE_EVALUATED,
+            payload={
+                "tool_call_id": "tool-1",
+                "proposal_digest": "a" * 64,
+                "revision": 1,
+                "attempt": 1,
+                "max_attempts": 2,
+                "outcome": "retry",
+                "reason": "incomplete explanation",
+            },
+        ),
+    )
+
+    assert state.status is RunStatus.AWAITING_GATE
+    assert state.active_gate_attempts == 1
+    assert state.active_gate_max_attempts == 2
+
+    blocked = reduce(
+        state,
+        event(
+            5,
+            EventType.GATE_EVALUATED,
+            payload={
+                "tool_call_id": "tool-1",
+                "proposal_digest": "a" * 64,
+                "revision": 1,
+                "attempt": 2,
+                "max_attempts": 2,
+                "outcome": "block",
+                "reason": "attempt limit exhausted",
+            },
+        ),
+    )
+
+    assert blocked.status is RunStatus.FAILED
+    assert blocked.failure_reason == "attempt limit exhausted"
+
+
+def test_user_gate_cannot_use_pair_approval_event() -> None:
+    state = apply(
+        ready_state(),
+        event(2, EventType.TOOL_REQUESTED, payload={"tool_call_id": "tool-1"}),
+        event(
+            3,
+            EventType.TOOL_ESCALATED,
+            payload={
+                "tool_call_id": "tool-1",
+                "proposal_digest": "a" * 64,
+                "revision": 1,
+                "ownership_mode": "user_gate",
+                "max_attempts": 2,
+            },
+        ),
+    )
+
+    with pytest.raises(InvalidTransitionError, match="requires pair mode"):
         reduce(
             state,
             event(
