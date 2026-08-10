@@ -17,6 +17,7 @@ class ToolDefinition:
 
     tool_name: str
     retry_is_idempotent: bool
+    path_argument_names: tuple[str, ...] = ()
 
 
 class ToolRegistry:
