@@ -224,7 +224,7 @@ R3.3 targeted tests: 31 passed
 Full suite: 106 passed in 0.93s
 Ruff: All checks passed!
 Format: 35 files already formatted
-Remote: publication pending
+Remote: published through 478a8e1 on durable-tool-execution-recovery
 ```
 
 Workflow decision:
@@ -236,10 +236,9 @@ Workflow decision:
 
 Next executable step:
 
-1. Publish R3.3b and synchronize the project control documents.
-2. Explain the real evaluation and Runtime data flow to Lucas.
-3. Complete the understanding gate.
-4. Continue with revision rollover and replacement-proposal invalidation.
+1. Explain the real evaluation and Runtime data flow to Lucas.
+2. Complete the understanding gate.
+3. Continue with revision rollover and replacement-proposal invalidation.
 
 Still deferred:
 
