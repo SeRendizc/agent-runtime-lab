@@ -123,12 +123,69 @@ Remote: branch pushed
 PR: not opened
 ```
 
-Pending before marking R3.2 complete:
+Lucas understanding gate — completed 2026-08-10:
 
-- Lucas explains classification versus authorization, registry versus
-  workspace rejection, and escalation versus denial.
-- Then connect the verified authorization contract to the reducer and durable
-  executor.
+- Explained that plan-level `AUTO` cannot authorize a later concrete request.
+- Distinguished Registry rejection from Workspace Boundary rejection.
+- Explained that valid high-ownership work escalates for human participation
+  rather than being denied as an invalid request.
+- Clarified that ordinary low-risk writes may remain `AUTO`; modification alone
+  does not imply USER_GATE.
+
+## Current milestone — R3.3 durable ownership gates
+
+R3.3a implemented and verified:
+
+- Added `AWAITING_GATE`, `TOOL_ESCALATED`, `GATE_APPROVED`, and `GATE_REJECTED`
+  to the deterministic Event/Reducer state machine.
+- Added an exact `GateReference` bound to `run_id`, `tool_call_id`,
+  `proposal_digest`, and Runtime-owned revision.
+- Derived the proposal digest from the immutable concrete request, normalized
+  paths, ownership mode, and revision.
+- Added `AuthorizedToolRuntime` to enforce the complete
+  Authorization -> Event/Reducer -> DurableToolExecutor path.
+- Ensured `DENY` and `ESCALATE` never persist a Tool Intent or invoke the Tool.
+- Rebuilt the original `ToolRequest` from persisted events after approval;
+  callers cannot substitute new execution arguments during resume.
+- Rechecked current Authorization before executing an approved proposal.
+- Persisted PAIR and USER_GATE mode, approval actor/reason, rejection reason,
+  and exact proposal reference.
+- Covered process restart while awaiting a gate and the crash window after
+  `GATE_APPROVED` but before `TOOL_STARTED`.
+- Rejected stale or mismatched proposal revisions without executing a Tool.
+
+Evidence:
+
+```text
+Branch: durable-tool-execution-recovery (publish target)
+Code commit: 4200871
+R3.3 targeted tests: 18 passed
+Full suite: 93 passed in 0.51s
+Ruff: All checks passed!
+Format: 35 files already formatted
+PR: not opened
+```
+
+Important boundary:
+
+- A Gate reference proves which persisted proposal is being resolved; it is not
+  a digital signature or user-authentication mechanism.
+- Only a trusted UI/API adapter may construct and submit `GateResolution` in a
+  deployed system. The model must never receive that capability as a Tool.
+- R3.3a uses one shared approve/reject substrate for PAIR and USER_GATE while
+  retaining their exact mode. R3.3b will add USER_GATE answer evaluation and
+  durable attempt counts through the reserved `evaluate_gate` learning boundary.
+- Revision rollover/new-proposal invalidation is represented in the contract
+  but replacement-proposal orchestration is not yet implemented.
+
+Lucas understanding gate — pending:
+
+- Explain why `ESCALATE` is a coarse Runtime action while PAIR/USER_GATE are
+  precise ownership modes.
+- Explain why approval must reference the exact proposal rather than use a
+  boolean `approved=True`.
+- Explain which guarantee proposal digest provides and which authentication
+  guarantee it deliberately does not provide.
 
 Still deferred:
 
