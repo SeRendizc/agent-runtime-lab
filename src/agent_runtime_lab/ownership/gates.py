@@ -10,10 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agent_runtime_lab.domain.errors import (
-    DeveloperOwnedImplementationRequired,
-    EventValidationError,
-)
+from agent_runtime_lab.domain.errors import EventValidationError
 from agent_runtime_lab.ownership.authorization import (
     AuthorizationDecision,
     AuthorizationOutcome,
@@ -230,7 +227,71 @@ def evaluate_gate(
     gate: GateProposal,
     answer: Mapping[str, Any],
 ) -> GateEvaluation:
-    """Evaluate a USER_GATE answer at the developer-owned learning boundary."""
+    """Evaluate whether one USER_GATE answer matches and explains its proposal."""
 
-    del gate, answer
-    raise DeveloperOwnedImplementationRequired("Lucas must implement evaluate_gate(gate, answer)")
+    if answer.get("refuse") is True:
+        return GateEvaluation(
+            outcome=GateEvaluationOutcome.BLOCK,
+            reason="user explicitly refused the proposed tool request",
+        )
+
+    required_fields = ("tool_name", "path", "risk_explanation", "refuse")
+    missing_fields = tuple(field for field in required_fields if field not in answer)
+    if missing_fields:
+        return GateEvaluation(
+            outcome=GateEvaluationOutcome.RETRY,
+            reason=f"missing required fields: {', '.join(missing_fields)}",
+        )
+
+    if not isinstance(answer["refuse"], bool):
+        return GateEvaluation(
+            outcome=GateEvaluationOutcome.RETRY,
+            reason="refuse must be a boolean",
+        )
+
+    text_fields = ("tool_name", "path", "risk_explanation")
+    invalid_text_fields = tuple(
+        field for field in text_fields if not isinstance(answer[field], str) or not answer[field]
+    )
+    if invalid_text_fields:
+        return GateEvaluation(
+            outcome=GateEvaluationOutcome.RETRY,
+            reason=(f"fields must be non-empty strings: {', '.join(invalid_text_fields)}"),
+        )
+
+    if answer["tool_name"] != gate.tool_name:
+        return GateEvaluation(
+            outcome=GateEvaluationOutcome.RETRY,
+            reason="tool_name does not match the gated proposal",
+        )
+
+    try:
+        proposed_arguments = json.loads(gate.arguments_json)
+    except json.JSONDecodeError:
+        return GateEvaluation(
+            outcome=GateEvaluationOutcome.BLOCK,
+            reason="gated proposal contains invalid arguments JSON",
+        )
+    proposed_path = proposed_arguments.get("path")
+    if not isinstance(proposed_path, str):
+        return GateEvaluation(
+            outcome=GateEvaluationOutcome.BLOCK,
+            reason="gated proposal does not contain a string path",
+        )
+    if answer["path"] != proposed_path:
+        return GateEvaluation(
+            outcome=GateEvaluationOutcome.RETRY,
+            reason="path does not match the gated proposal",
+        )
+
+    explanation_length = len("".join(answer["risk_explanation"].split()))
+    if explanation_length < 20:
+        return GateEvaluation(
+            outcome=GateEvaluationOutcome.RETRY,
+            reason="risk_explanation must contain at least 20 non-whitespace characters",
+        )
+
+    return GateEvaluation(
+        outcome=GateEvaluationOutcome.PASS,
+        reason="tool, path, and risk explanation match the gated proposal",
+    )
