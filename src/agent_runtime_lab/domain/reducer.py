@@ -144,6 +144,40 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             active_gate_max_attempts=None,
         )
 
+    if event.event_type is EventType.GATE_REVISED:
+        _expect(state, RunStatus.AWAITING_GATE, event)
+        _expect_active_tool(state, event)
+        previous_proposal_digest = _required_text(event, "previous_proposal_digest")
+        previous_revision = _required_positive_int(event, "previous_revision")
+        if previous_proposal_digest != state.active_gate_proposal_digest:
+            raise InvalidTransitionError("gate.revised does not match active gate proposal")
+        if previous_revision != state.active_gate_revision:
+            raise InvalidTransitionError("gate.revised does not match active gate revision")
+
+        proposal_digest = _required_text(event, "proposal_digest")
+        revision = _required_positive_int(event, "revision")
+        if revision != previous_revision + 1:
+            raise InvalidTransitionError("gate.revised revision must increment the active revision")
+        if proposal_digest == previous_proposal_digest:
+            raise InvalidTransitionError("gate.revised requires a new proposal digest")
+
+        ownership_mode = _required_text(event, "ownership_mode")
+        if ownership_mode not in {"pair", "user_gate"}:
+            raise InvalidTransitionError(
+                "gate.revised requires pair or user_gate payload.ownership_mode"
+            )
+        max_attempts = None
+        if ownership_mode == "user_gate":
+            max_attempts = _required_positive_int(event, "max_attempts")
+        return replace(
+            state,
+            active_gate_proposal_digest=proposal_digest,
+            active_gate_revision=revision,
+            active_gate_mode=ownership_mode,
+            active_gate_attempts=0,
+            active_gate_max_attempts=max_attempts,
+        )
+
     if event.event_type is EventType.GATE_EVALUATED:
         _expect(state, RunStatus.AWAITING_GATE, event)
         _expect_active_gate(state, event)

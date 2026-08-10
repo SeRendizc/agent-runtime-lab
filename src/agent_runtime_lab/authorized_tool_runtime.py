@@ -302,6 +302,42 @@ class AuthorizedToolRuntime:
             gate_attempt=attempt,
         )
 
+    def revise_gate(self, reference: GateReference) -> RuntimeToolResult:
+        """Replace one active proposal using the current trusted authorization policy."""
+
+        state = self.load_state(reference.run_id)
+        self._validate_reference(state, reference)
+        request = self._load_active_request(reference.run_id, reference.tool_call_id)
+        decision = authorize(request, self._authorization_context)
+        if decision.outcome is not AuthorizationOutcome.ESCALATE:
+            raise GateReferenceMismatchError(
+                "current authorization policy no longer produces a gate proposal"
+            )
+
+        proposal = GateProposal.build(
+            request=request,
+            decision=decision,
+            revision=reference.revision + 1,
+        )
+        payload: dict[str, Any] = {
+            "ownership_mode": proposal.ownership_mode.value,
+            "previous_proposal_digest": reference.proposal_digest,
+            "previous_revision": reference.revision,
+            "proposal_digest": proposal.reference.proposal_digest,
+            "reasons": list(proposal.reasons),
+            "revision": proposal.reference.revision,
+            "tool_call_id": reference.tool_call_id,
+        }
+        if proposal.ownership_mode is OwnershipMode.USER_GATE:
+            payload["max_attempts"] = self._user_gate_max_attempts
+        revised_state = self._append(reference.run_id, EventType.GATE_REVISED, payload)
+        return RuntimeToolResult(
+            outcome=RuntimeToolOutcome.AWAITING_GATE,
+            state=revised_state,
+            authorization=decision,
+            gate_proposal=proposal,
+        )
+
     def recover(self, run_id: str) -> RuntimeToolResult:
         """Continue an approved or already-started durable effect after restart."""
 
@@ -418,9 +454,13 @@ class AuthorizedToolRuntime:
         reference: GateReference,
     ) -> GateProposal:
         for event in reversed(self._event_store.load(request.run_id)):
-            if event.event_type is not EventType.TOOL_ESCALATED:
+            if event.event_type not in {EventType.TOOL_ESCALATED, EventType.GATE_REVISED}:
                 continue
             if event.payload.get("tool_call_id") != request.tool_call_id:
+                continue
+            if event.payload.get("proposal_digest") != reference.proposal_digest:
+                continue
+            if event.payload.get("revision") != reference.revision:
                 continue
             reasons = event.payload.get("reasons")
             if not isinstance(reasons, list) or not all(

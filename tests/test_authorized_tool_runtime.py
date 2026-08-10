@@ -149,6 +149,7 @@ def make_runtime(
     runner: RecordingToolRunner,
     gate_evaluator: Any = evaluate_gate,
     user_gate_max_attempts: int = 3,
+    authorization_context: AuthorizationContext | None = None,
 ) -> tuple[AuthorizedToolRuntime, SQLiteEventStore, SQLiteToolEffectStore]:
     registry = make_registry()
     event_store = SQLiteEventStore(database_path)
@@ -161,7 +162,11 @@ def make_runtime(
     runtime = AuthorizedToolRuntime(
         event_store=event_store,
         executor=executor,
-        authorization_context=make_authorization_context(workspace_root, registry),
+        authorization_context=(
+            authorization_context
+            if authorization_context is not None
+            else make_authorization_context(workspace_root, registry)
+        ),
         gate_evaluator=gate_evaluator,
         user_gate_max_attempts=user_gate_max_attempts,
         clock=lambda: NOW,
@@ -296,6 +301,146 @@ def test_forged_or_stale_gate_reference_cannot_resume_execution(tmp_path: Path) 
 
     event_store.close()
     effect_store.close()
+
+
+def test_revised_gate_invalidates_old_reference_and_survives_restart(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "runtime.db"
+    runner = RecordingToolRunner()
+    runtime, event_store, effect_store = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    initialize_run(event_store)
+    paused = runtime.submit(make_request(tool_name="write_file"))
+    assert paused.gate_proposal is not None
+    old_reference = paused.gate_proposal.reference
+
+    revised = runtime.revise_gate(old_reference)
+
+    assert revised.gate_proposal is not None
+    new_reference = revised.gate_proposal.reference
+    assert new_reference.revision == old_reference.revision + 1
+    assert new_reference.proposal_digest != old_reference.proposal_digest
+    assert revised.state.active_gate_revision == new_reference.revision
+    assert revised.state.active_gate_proposal_digest == new_reference.proposal_digest
+    event_store.close()
+    effect_store.close()
+
+    recovered, recovered_events, recovered_effects = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    with pytest.raises(GateReferenceMismatchError):
+        recovered.resolve_gate(GateResolution.approve(old_reference, actor="lucas"))
+
+    completed = recovered.resolve_gate(
+        GateResolution.approve(
+            new_reference,
+            actor="lucas",
+            reason="reviewed the current revision",
+        )
+    )
+
+    assert completed.outcome is RuntimeToolOutcome.EXECUTED
+    assert len(runner.calls) == 1
+    assert [event.event_type for event in recovered_events.load("run-1")][-4:] == [
+        EventType.GATE_REVISED,
+        EventType.GATE_APPROVED,
+        EventType.TOOL_STARTED,
+        EventType.TOOL_SUCCEEDED,
+    ]
+    recovered_events.close()
+    recovered_effects.close()
+
+
+def test_revision_rollover_resets_user_gate_attempts(tmp_path: Path) -> None:
+    runner = RecordingToolRunner()
+    evaluator = SequencedGateEvaluator(
+        GateEvaluation(outcome=GateEvaluationOutcome.RETRY, reason="incomplete"),
+    )
+    runtime, event_store, effect_store = make_runtime(
+        database_path=tmp_path / "runtime.db",
+        workspace_root=tmp_path,
+        runner=runner,
+        gate_evaluator=evaluator,
+    )
+    initialize_run(event_store)
+    paused = runtime.submit(make_request(tool_name="delete_file"))
+    assert paused.gate_proposal is not None
+    old_reference = paused.gate_proposal.reference
+    retry = runtime.submit_gate_answer(
+        GateAnswerSubmission.build(old_reference, actor="lucas", answer={"answer": "weak"})
+    )
+    assert retry.state.active_gate_attempts == 1
+
+    revised = runtime.revise_gate(old_reference)
+
+    assert revised.gate_proposal is not None
+    assert revised.state.active_gate_attempts == 0
+    assert revised.state.active_gate_max_attempts == 3
+    with pytest.raises(GateReferenceMismatchError):
+        runtime.submit_gate_answer(
+            GateAnswerSubmission.build(
+                old_reference,
+                actor="lucas",
+                answer={"answer": "stale"},
+            )
+        )
+    assert runner.calls == []
+    event_store.close()
+    effect_store.close()
+
+
+def test_policy_upgrade_rollover_changes_pair_to_user_gate(tmp_path: Path) -> None:
+    database_path = tmp_path / "runtime.db"
+    runner = RecordingToolRunner()
+    runtime, event_store, effect_store = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    initialize_run(event_store)
+    paused = runtime.submit(make_request(tool_name="write_file"))
+    assert paused.gate_proposal is not None
+    old_reference = paused.gate_proposal.reference
+    event_store.close()
+    effect_store.close()
+
+    registry = make_registry()
+    upgraded_context = make_authorization_context(tmp_path, registry)
+    upgraded_context = AuthorizationContext(
+        registry=upgraded_context.registry,
+        workspace=upgraded_context.workspace,
+        risk_evaluator=upgraded_context.risk_evaluator,
+        policy=upgraded_context.policy,
+        minimum_mode=OwnershipMode.USER_GATE,
+    )
+    upgraded, upgraded_events, upgraded_effects = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+        authorization_context=upgraded_context,
+    )
+
+    revised = upgraded.revise_gate(old_reference)
+
+    assert revised.gate_proposal is not None
+    assert revised.gate_proposal.ownership_mode is OwnershipMode.USER_GATE
+    assert revised.state.active_gate_mode == OwnershipMode.USER_GATE.value
+    assert revised.state.active_gate_max_attempts == 3
+    with pytest.raises(GateReferenceMismatchError):
+        upgraded.resolve_gate(GateResolution.approve(old_reference, actor="lucas"))
+    with pytest.raises(InvalidTransitionError, match="evaluated answer"):
+        upgraded.resolve_gate(
+            GateResolution.approve(revised.gate_proposal.reference, actor="lucas")
+        )
+    assert runner.calls == []
+    upgraded_events.close()
+    upgraded_effects.close()
 
 
 def test_approved_gate_can_recover_if_process_stops_before_tool_start(

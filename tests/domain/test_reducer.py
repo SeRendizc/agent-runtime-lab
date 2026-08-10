@@ -315,3 +315,104 @@ def test_user_gate_cannot_use_pair_approval_event() -> None:
                 },
             ),
         )
+
+
+def test_gate_revision_atomically_replaces_active_identity_and_resets_attempts() -> None:
+    state = apply(
+        ready_state(),
+        event(2, EventType.TOOL_REQUESTED, payload={"tool_call_id": "tool-1"}),
+        event(
+            3,
+            EventType.TOOL_ESCALATED,
+            payload={
+                "tool_call_id": "tool-1",
+                "proposal_digest": "a" * 64,
+                "revision": 1,
+                "ownership_mode": "user_gate",
+                "max_attempts": 2,
+            },
+        ),
+        event(
+            4,
+            EventType.GATE_EVALUATED,
+            payload={
+                "tool_call_id": "tool-1",
+                "proposal_digest": "a" * 64,
+                "revision": 1,
+                "attempt": 1,
+                "max_attempts": 2,
+                "outcome": "retry",
+                "reason": "incomplete",
+            },
+        ),
+    )
+
+    revised = reduce(
+        state,
+        event(
+            5,
+            EventType.GATE_REVISED,
+            payload={
+                "tool_call_id": "tool-1",
+                "previous_proposal_digest": "a" * 64,
+                "previous_revision": 1,
+                "proposal_digest": "b" * 64,
+                "revision": 2,
+                "ownership_mode": "pair",
+            },
+        ),
+    )
+
+    assert revised.status is RunStatus.AWAITING_GATE
+    assert revised.active_gate_proposal_digest == "b" * 64
+    assert revised.active_gate_revision == 2
+    assert revised.active_gate_mode == "pair"
+    assert revised.active_gate_attempts == 0
+    assert revised.active_gate_max_attempts is None
+
+
+@pytest.mark.parametrize(
+    ("previous_digest", "previous_revision", "new_revision", "message"),
+    [
+        ("c" * 64, 1, 2, "proposal"),
+        ("a" * 64, 2, 3, "active gate revision"),
+        ("a" * 64, 1, 3, "increment"),
+    ],
+)
+def test_gate_revision_rejects_stale_or_skipped_predecessor(
+    previous_digest: str,
+    previous_revision: int,
+    new_revision: int,
+    message: str,
+) -> None:
+    state = apply(
+        ready_state(),
+        event(2, EventType.TOOL_REQUESTED, payload={"tool_call_id": "tool-1"}),
+        event(
+            3,
+            EventType.TOOL_ESCALATED,
+            payload={
+                "tool_call_id": "tool-1",
+                "proposal_digest": "a" * 64,
+                "revision": 1,
+                "ownership_mode": "pair",
+            },
+        ),
+    )
+
+    with pytest.raises(InvalidTransitionError, match=message):
+        reduce(
+            state,
+            event(
+                4,
+                EventType.GATE_REVISED,
+                payload={
+                    "tool_call_id": "tool-1",
+                    "previous_proposal_digest": previous_digest,
+                    "previous_revision": previous_revision,
+                    "proposal_digest": "b" * 64,
+                    "revision": new_revision,
+                    "ownership_mode": "pair",
+                },
+            ),
+        )
