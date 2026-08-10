@@ -11,11 +11,7 @@ from agent_runtime_lab.authorized_tool_runtime import (
     AuthorizedToolRuntime,
     RuntimeToolOutcome,
 )
-from agent_runtime_lab.domain.errors import (
-    DeveloperOwnedImplementationRequired,
-    GateReferenceMismatchError,
-    InvalidTransitionError,
-)
+from agent_runtime_lab.domain.errors import GateReferenceMismatchError, InvalidTransitionError
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
 from agent_runtime_lab.domain.state import RunStatus
 from agent_runtime_lab.domain.tool_effects import derive_effect_id
@@ -385,7 +381,7 @@ def test_user_gate_rejection_is_durable_and_never_executes(tmp_path: Path) -> No
     effect_store.close()
 
 
-def test_default_gate_evaluator_preserves_developer_owned_boundary(tmp_path: Path) -> None:
+def test_default_gate_evaluator_retries_incomplete_answer(tmp_path: Path) -> None:
     runner = RecordingToolRunner()
     runtime, event_store, effect_store = make_runtime(
         database_path=tmp_path / "runtime.db",
@@ -396,17 +392,149 @@ def test_default_gate_evaluator_preserves_developer_owned_boundary(tmp_path: Pat
     paused = runtime.submit(make_request(tool_name="delete_file"))
     assert paused.gate_proposal is not None
 
-    with pytest.raises(DeveloperOwnedImplementationRequired, match="Lucas"):
-        runtime.submit_gate_answer(
-            GateAnswerSubmission.build(
-                paused.gate_proposal.reference,
-                actor="lucas",
-                answer={"explanation": "I understand the deletion risk"},
-            )
+    result = runtime.submit_gate_answer(
+        GateAnswerSubmission.build(
+            paused.gate_proposal.reference,
+            actor="lucas",
+            answer={"risk_explanation": "I understand the deletion risk"},
         )
+    )
 
-    assert runtime.load_state("run-1").active_gate_attempts == 0
+    assert result.outcome is RuntimeToolOutcome.GATE_RETRY
+    assert result.gate_evaluation is not None
+    assert result.gate_evaluation.outcome is GateEvaluationOutcome.RETRY
+    assert runtime.load_state("run-1").active_gate_attempts == 1
     assert runner.calls == []
+    event_store.close()
+    effect_store.close()
+
+
+def test_default_gate_evaluator_blocks_explicit_refusal(tmp_path: Path) -> None:
+    runner = RecordingToolRunner()
+    runtime, event_store, effect_store = make_runtime(
+        database_path=tmp_path / "runtime.db",
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    initialize_run(event_store)
+    paused = runtime.submit(make_request(tool_name="delete_file"))
+    assert paused.gate_proposal is not None
+
+    result = runtime.submit_gate_answer(
+        GateAnswerSubmission.build(
+            paused.gate_proposal.reference,
+            actor="lucas",
+            answer={"refuse": True},
+        )
+    )
+
+    assert result.outcome is RuntimeToolOutcome.BLOCKED
+    assert result.gate_evaluation is not None
+    assert result.gate_evaluation.outcome is GateEvaluationOutcome.BLOCK
+    assert result.state.status is RunStatus.FAILED
+    assert runner.calls == []
+    event_store.close()
+    effect_store.close()
+
+
+def test_default_gate_evaluator_passes_exact_well_explained_answer(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingToolRunner()
+    runtime, event_store, effect_store = make_runtime(
+        database_path=tmp_path / "runtime.db",
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    initialize_run(event_store)
+    paused = runtime.submit(make_request(tool_name="delete_file"))
+    assert paused.gate_proposal is not None
+
+    result = runtime.submit_gate_answer(
+        GateAnswerSubmission.build(
+            paused.gate_proposal.reference,
+            actor="lucas",
+            answer={
+                "tool_name": "delete_file",
+                "path": "README.md",
+                "risk_explanation": (
+                    "Deleting this file removes project documentation and may require "
+                    "restoring it from version control."
+                ),
+                "refuse": False,
+            },
+        )
+    )
+
+    assert result.outcome is RuntimeToolOutcome.EXECUTED
+    assert result.gate_evaluation is not None
+    assert result.gate_evaluation.outcome is GateEvaluationOutcome.PASS
+    assert len(runner.calls) == 1
+    assert runner.calls[0][0:2] == ("delete_file", {"path": "README.md"})
+    event_store.close()
+    effect_store.close()
+
+
+@pytest.mark.parametrize(
+    ("answer", "reason_fragment"),
+    [
+        (
+            {
+                "tool_name": "write_file",
+                "path": "README.md",
+                "risk_explanation": "This deletion permanently removes the selected project file.",
+                "refuse": False,
+            },
+            "tool_name does not match",
+        ),
+        (
+            {
+                "tool_name": "delete_file",
+                "path": "docs/progress.md",
+                "risk_explanation": "This deletion permanently removes the selected project file.",
+                "refuse": False,
+            },
+            "path does not match",
+        ),
+        (
+            {
+                "tool_name": "delete_file",
+                "path": "README.md",
+                "risk_explanation": "too short",
+                "refuse": False,
+            },
+            "at least 20",
+        ),
+        (
+            {
+                "tool_name": "delete_file",
+                "path": "README.md",
+                "risk_explanation": "This deletion permanently removes the selected project file.",
+                "refuse": "false",
+            },
+            "refuse must be a boolean",
+        ),
+    ],
+)
+def test_default_gate_evaluator_retries_mismatched_or_invalid_answers(
+    tmp_path: Path,
+    answer: dict[str, Any],
+    reason_fragment: str,
+) -> None:
+    runner = RecordingToolRunner()
+    runtime, event_store, effect_store = make_runtime(
+        database_path=tmp_path / "runtime.db",
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    initialize_run(event_store)
+    paused = runtime.submit(make_request(tool_name="delete_file"))
+    assert paused.gate_proposal is not None
+
+    evaluation = evaluate_gate(paused.gate_proposal, answer)
+
+    assert evaluation.outcome is GateEvaluationOutcome.RETRY
+    assert reason_fragment in evaluation.reason
     event_store.close()
     effect_store.close()
 
