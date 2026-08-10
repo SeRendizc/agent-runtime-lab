@@ -13,11 +13,11 @@ The active development branch is `durable-tool-execution-recovery`. The
 deterministic R1 core, durable R2 tool-effect path, R3.1 ownership step
 classification, the R3.2 authorization contract, and the R3.3a durable gate
 control path are implemented and published on that branch. R3.3b USER_GATE
-attempt persistence is locally implemented and verified; its final evaluator
-remains the explicit developer-owned learning boundary.
+attempt persistence and concrete answer evaluation are implemented and verified;
+the understanding gate remains before the milestone is marked complete.
 
-Published R3.3a evidence is `f880cdd` / `6955650`. Local R3.3b scaffold evidence
-is `c2989b3`:
+Published R3.3a evidence is `f880cdd` / `6955650`. R3.3b implementation evidence
+is `c2989b3` plus `90a384e`:
 
 - immutable events, run state, lifecycle reduction, and ordered replay;
 - SQLite tool intents and receipts with crash-window recovery;
@@ -38,12 +38,12 @@ is `c2989b3`:
 - operational separation between PAIR approval and USER_GATE answer evaluation;
 - canonical gate answers, durable attempt counts, `PASS / RETRY / BLOCK`,
   bounded retry exhaustion, and post-pass crash recovery;
-- 100 tests pass, Ruff passes, and 35 files pass the format check.
+- 106 tests pass, Ruff passes, and 35 files pass the format check.
 
-R3.3a has been pushed to the development branch; the R3.3b scaffold is not yet
-published and is not claimed as complete until Lucas implements and explains
-`evaluate_gate(...)`. Nothing is claimed as merged to `main`. The runtime is
-still a validation spike, not a production sandbox or a complete agent loop.
+R3.3a has been pushed to the development branch. R3.3b is implemented and awaits
+publication plus Lucas's explanation of the mechanism before it is marked
+complete. Nothing is claimed as merged to `main`. The runtime is still a
+validation spike, not a production sandbox or a complete agent loop.
 
 The intended scope is:
 
@@ -85,9 +85,16 @@ USER_GATE cannot be bypassed with the PAIR approval API.
 
 Gate references bind an approval to the exact proposal, but do not authenticate
 the human actor. Production identity and session authentication belong at the
-trusted UI/API boundary. Durable USER_GATE attempt infrastructure is present,
-while the final domain-specific `evaluate_gate(...)` logic remains intentionally
-developer-owned.
+trusted UI/API boundary. USER_GATE now evaluates an explicit refusal, exact
+tool/path binding, typed answer fields, and a minimum non-whitespace risk
+explanation before returning `PASS`, `RETRY`, or `BLOCK`.
+
+## Learning workflow
+
+The accelerated project workflow is AI implementation and verification first,
+followed by a code-grounded explanation and a Lucas understanding gate. Knowledge
+ownership is demonstrated by explaining the mechanism and its boundaries; it
+does not require Lucas to type each core function personally.
 
 ## Relationship to the other labs
 
