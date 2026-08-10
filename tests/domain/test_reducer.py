@@ -155,3 +155,75 @@ def test_denied_tool_terminates_with_reason() -> None:
 
     assert state.status is RunStatus.FAILED
     assert state.failure_reason == "outside workspace"
+
+
+def test_escalated_tool_waits_for_matching_gate_approval() -> None:
+    state = apply(
+        ready_state(),
+        event(2, EventType.TOOL_REQUESTED, payload={"tool_call_id": "tool-1"}),
+        event(
+            3,
+            EventType.TOOL_ESCALATED,
+            payload={
+                "tool_call_id": "tool-1",
+                "proposal_digest": "a" * 64,
+                "revision": 1,
+                "ownership_mode": "pair",
+            },
+        ),
+    )
+
+    assert state.status is RunStatus.AWAITING_GATE
+    assert state.active_gate_proposal_digest == "a" * 64
+    assert state.active_gate_revision == 1
+    assert state.active_gate_mode == "pair"
+
+    approved = reduce(
+        state,
+        event(
+            4,
+            EventType.GATE_APPROVED,
+            payload={
+                "tool_call_id": "tool-1",
+                "proposal_digest": "a" * 64,
+                "revision": 1,
+            },
+        ),
+    )
+
+    assert approved.status is RunStatus.TOOL_READY
+    assert approved.active_tool_call_id == "tool-1"
+    assert approved.active_gate_proposal_digest is None
+    assert approved.active_gate_revision is None
+    assert approved.active_gate_mode is None
+
+
+def test_gate_approval_must_match_active_proposal_revision() -> None:
+    state = apply(
+        ready_state(),
+        event(2, EventType.TOOL_REQUESTED, payload={"tool_call_id": "tool-1"}),
+        event(
+            3,
+            EventType.TOOL_ESCALATED,
+            payload={
+                "tool_call_id": "tool-1",
+                "proposal_digest": "a" * 64,
+                "revision": 2,
+                "ownership_mode": "user_gate",
+            },
+        ),
+    )
+
+    with pytest.raises(InvalidTransitionError, match="revision"):
+        reduce(
+            state,
+            event(
+                4,
+                EventType.GATE_APPROVED,
+                payload={
+                    "tool_call_id": "tool-1",
+                    "proposal_digest": "a" * 64,
+                    "revision": 1,
+                },
+            ),
+        )

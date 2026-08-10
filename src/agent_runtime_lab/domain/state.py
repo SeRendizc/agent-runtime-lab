@@ -13,6 +13,7 @@ class RunStatus(StrEnum):
     CREATED = "created"
     READY = "ready"
     TOOL_PENDING = "tool_pending"
+    AWAITING_GATE = "awaiting_gate"
     TOOL_READY = "tool_ready"
     TOOL_RUNNING = "tool_running"
     VERIFYING = "verifying"
@@ -31,6 +32,9 @@ class RunState:
     status: RunStatus = RunStatus.NEW
     next_sequence: int = 0
     active_tool_call_id: str | None = None
+    active_gate_proposal_digest: str | None = None
+    active_gate_revision: int | None = None
+    active_gate_mode: str | None = None
     failure_reason: str | None = None
     applied_event_fingerprints: tuple[tuple[str, str], ...] = ()
 

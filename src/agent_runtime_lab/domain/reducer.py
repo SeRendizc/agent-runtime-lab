@@ -37,12 +37,39 @@ def _expect_active_tool(state: RunState, event: ExecutionEvent) -> str:
     return tool_call_id
 
 
+def _required_positive_int(event: ExecutionEvent, field: str) -> int:
+    value = event.payload.get(field)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise InvalidTransitionError(
+            f"{event.event_type.value} requires positive integer payload.{field}"
+        )
+    return value
+
+
+def _expect_active_gate(state: RunState, event: ExecutionEvent) -> None:
+    _expect_active_tool(state, event)
+    proposal_digest = _required_text(event, "proposal_digest")
+    revision = _required_positive_int(event, "revision")
+
+    if proposal_digest != state.active_gate_proposal_digest:
+        raise InvalidTransitionError(
+            f"{event.event_type.value} does not match active gate proposal"
+        )
+    if revision != state.active_gate_revision:
+        raise InvalidTransitionError(
+            f"{event.event_type.value} does not match active gate revision"
+        )
+
+
 def _transition(state: RunState, event: ExecutionEvent) -> RunState:
     if event.event_type is EventType.RUN_CANCELLED:
         return replace(
             state,
             status=RunStatus.CANCELLED,
             active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
             failure_reason=None,
         )
 
@@ -75,6 +102,49 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
         _expect_active_tool(state, event)
         return replace(state, status=RunStatus.TOOL_READY)
 
+    if event.event_type is EventType.TOOL_ESCALATED:
+        _expect(state, RunStatus.TOOL_PENDING, event)
+        _expect_active_tool(state, event)
+        proposal_digest = _required_text(event, "proposal_digest")
+        revision = _required_positive_int(event, "revision")
+        ownership_mode = _required_text(event, "ownership_mode")
+        if ownership_mode not in {"pair", "user_gate"}:
+            raise InvalidTransitionError(
+                "tool.escalated requires pair or user_gate payload.ownership_mode"
+            )
+        return replace(
+            state,
+            status=RunStatus.AWAITING_GATE,
+            active_gate_proposal_digest=proposal_digest,
+            active_gate_revision=revision,
+            active_gate_mode=ownership_mode,
+        )
+
+    if event.event_type is EventType.GATE_APPROVED:
+        _expect(state, RunStatus.AWAITING_GATE, event)
+        _expect_active_gate(state, event)
+        return replace(
+            state,
+            status=RunStatus.TOOL_READY,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
+        )
+
+    if event.event_type is EventType.GATE_REJECTED:
+        _expect(state, RunStatus.AWAITING_GATE, event)
+        _expect_active_gate(state, event)
+        reason = _required_text(event, "reason")
+        return replace(
+            state,
+            status=RunStatus.FAILED,
+            active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
+            failure_reason=reason,
+        )
+
     if event.event_type is EventType.TOOL_DENIED:
         _expect(state, RunStatus.TOOL_PENDING, event)
         _expect_active_tool(state, event)
@@ -83,6 +153,9 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             state,
             status=RunStatus.FAILED,
             active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
             failure_reason=reason,
         )
 
@@ -98,6 +171,9 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             state,
             status=RunStatus.VERIFYING,
             active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
         )
 
     if event.event_type is EventType.TOOL_FAILED:
@@ -108,6 +184,9 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             state,
             status=RunStatus.FAILED,
             active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
             failure_reason=reason,
         )
 

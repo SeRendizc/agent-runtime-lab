@@ -45,5 +45,9 @@ class InvalidTransitionError(RuntimeContractError):
     """An event cannot be applied in the current state."""
 
 
+class GateReferenceMismatchError(RuntimeContractError):
+    """A gate resolution does not identify the active durable proposal."""
+
+
 class TerminalStateError(RuntimeContractError):
     """A new event attempted to mutate a terminal run."""
