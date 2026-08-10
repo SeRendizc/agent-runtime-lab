@@ -13,8 +13,9 @@ The active development branch is `durable-tool-execution-recovery`. The
 deterministic R1 core, durable R2 tool-effect path, R3.1 ownership step
 classification, the R3.2 authorization contract, and the R3.3a durable gate
 control path are implemented and published on that branch. R3.3b USER_GATE
-attempt persistence and concrete answer evaluation are implemented and verified;
-the understanding gate remains before the milestone is marked complete.
+attempt persistence and concrete answer evaluation are also implemented,
+verified, and published; the understanding gate remains before the milestone is
+marked complete.
 
 Published R3.3a evidence is `f880cdd` / `6955650`. R3.3b implementation evidence
 is `c2989b3` plus `90a384e`:
@@ -40,10 +41,10 @@ is `c2989b3` plus `90a384e`:
   bounded retry exhaustion, and post-pass crash recovery;
 - 106 tests pass, Ruff passes, and 35 files pass the format check.
 
-R3.3a has been pushed to the development branch. R3.3b is implemented and awaits
-publication plus Lucas's explanation of the mechanism before it is marked
-complete. Nothing is claimed as merged to `main`. The runtime is still a
-validation spike, not a production sandbox or a complete agent loop.
+R3.3a and R3.3b have been pushed to the development branch. R3.3b awaits Lucas's
+explanation of the mechanism before it is marked complete. Nothing is claimed as
+merged to `main`. The runtime is still a validation spike, not a production
+sandbox or a complete agent loop.
 
 The intended scope is:
 
