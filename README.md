@@ -39,12 +39,15 @@ is `c2989b3` plus `90a384e`:
 - operational separation between PAIR approval and USER_GATE answer evaluation;
 - canonical gate answers, durable attempt counts, `PASS / RETRY / BLOCK`,
   bounded retry exhaustion, and post-pass crash recovery;
-- 106 tests pass, Ruff passes, and 35 files pass the format check.
+- proposal revision rollover, policy-mode upgrades, and stale-reference
+  invalidation across restart;
+- 113 tests pass, Ruff passes, and 35 Python files pass the format check.
 
-R3.3a and R3.3b have been pushed to the development branch. R3.3b awaits Lucas's
-explanation of the mechanism before it is marked complete. Nothing is claimed as
-merged to `main`. The runtime is still a validation spike, not a production
-sandbox or a complete agent loop.
+R3.3a and R3.3b have been pushed to the development branch, and Lucas completed
+the R3.3b understanding gate. R3.3c implements proposal revision rollover and
+stale-reference invalidation; its code is verified and awaits the next
+understanding gate. Nothing is claimed as merged to `main`. The runtime is still
+a validation spike, not a production sandbox or a complete agent loop.
 
 The intended scope is:
 
@@ -89,6 +92,13 @@ the human actor. Production identity and session authentication belong at the
 trusted UI/API boundary. USER_GATE now evaluates an explicit refusal, exact
 tool/path binding, typed answer fields, and a minimum non-whitespace risk
 explanation before returning `PASS`, `RETRY`, or `BLOCK`.
+
+When trusted policy changes while a request is waiting, `revise_gate()`
+re-authorizes the persisted request and appends `gate.revised` with both the
+expected predecessor identity and the new `revision + 1` identity. Reducer
+replay atomically replaces the active proposal, resets attempts for the new
+USER_GATE revision, and makes every prior digest/revision unusable at the
+resolution entry points.
 
 ## Learning workflow
 

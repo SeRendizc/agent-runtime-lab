@@ -193,9 +193,9 @@ being substituted, while it neither proves the proposal is correct nor
 authenticates the approving actor. He also distinguished the shared pause/replay
 substrate from the different PAIR and USER_GATE evaluation semantics.
 
-## Current milestone — R3.3b USER_GATE evaluation attempts
+## R3.3b — USER_GATE evaluation attempts
 
-Implementation and verification complete; Lucas understanding gate pending:
+Implementation, verification, and Lucas understanding gate complete:
 
 - Added immutable canonical `GateAnswerSubmission`.
 - Added persistable `GateEvaluation` with `PASS`, `RETRY`, and `BLOCK`.
@@ -234,11 +234,46 @@ Workflow decision:
 - Knowledge ownership is measured by explanation and review, not by requiring
   Lucas to personally type reserved functions.
 
+Lucas understanding gate — completed 2026-08-10:
+
+- Distinguished pure answer evaluation from Runtime state mutation and effects.
+- Explained why answer tool/path identity must match the proposal while final
+  execution still uses the persisted `ToolRequest`.
+- Located retry exhaustion in Runtime lifecycle policy rather than in the pure
+  evaluator.
+
+## Current milestone — R3.3c proposal revision rollover
+
+Implementation and verification complete; Lucas understanding gate pending:
+
+- Added `gate.revised` as the only event that replaces an active gate proposal.
+- Required the event to name the exact active predecessor digest and revision.
+- Enforced `new_revision == previous_revision + 1` and a new proposal digest.
+- Re-authorized the original persisted `ToolRequest` under the current trusted
+  policy before constructing the replacement proposal.
+- Atomically replayed the new digest, revision, ownership mode, and USER_GATE
+  attempt limit while resetting attempts to zero for the new proposal.
+- Invalidated old PAIR approvals and USER_GATE answers at Runtime entry points.
+- Covered restart after rollover and policy upgrades from PAIR to USER_GATE.
+- Kept concurrent rollover fail-closed through the Event Store's unique
+  `(run_id, sequence)` append contract; only one competing event can commit.
+
+Evidence:
+
+```text
+Published code commit: f810ca9
+Targeted Runtime + Reducer tests: 38 passed
+Full suite: 113 passed
+Ruff: All checks passed!
+Format: 35 Python files already formatted
+Remote: published on durable-tool-execution-recovery
+```
+
 Next executable step:
 
-1. Explain the real evaluation and Runtime data flow to Lucas.
-2. Complete the understanding gate.
-3. Continue with revision rollover and replacement-proposal invalidation.
+1. Explain revision identity, predecessor checks, replay, and stale-reference
+   rejection to Lucas.
+2. Complete the R3.3c understanding gate before the next Runtime batch.
 
 Still deferred:
 
