@@ -10,10 +10,11 @@ duplicating tool effects or bypassing user gates.
 ## Current status
 
 The active development branch is `durable-tool-execution-recovery`. The
-deterministic R1 core, durable R2 tool-effect path, and R3.1 ownership step
-classification are implemented and verified on that branch.
+deterministic R1 core, durable R2 tool-effect path, R3.1 ownership step
+classification, and the R3.2 authorization contract are implemented and
+verified on that branch.
 
-Current evidence at `4b4146f`:
+Current evidence at `2add6c8`:
 
 - immutable events, run state, lifecycle reduction, and ordered replay;
 - SQLite tool intents and receipts with crash-window recovery;
@@ -22,7 +23,11 @@ Current evidence at `4b4146f`:
 - ownership policy with `AUTO < PAIR < USER_GATE`;
 - deterministic `classify_step` decisions with explainable policy and context
   minimums;
-- 75 tests pass, Ruff passes, and 30 files pass the format check.
+- immutable concrete `ToolRequest` and deterministic `ALLOW` / `DENY` /
+  `ESCALATE` decisions;
+- trusted tool-path schemas and a workspace boundary that rejects traversal,
+  absolute paths, Windows drive paths, and malformed targets;
+- 85 tests pass, Ruff passes, and 32 files pass the format check.
 
 These changes have been pushed to the development branch but are not claimed
 as merged to `main`. The runtime is still a validation spike, not a production
@@ -56,9 +61,9 @@ Real ToolRequest
   -> allow / deny / escalate
 ```
 
-`OwnershipDecision` is not an authorization token. The next milestone is R3.2:
-define and implement `ToolRequest.authorize`, then connect it to the reducer and
-durable execution path.
+`OwnershipDecision` is not an authorization token. R3.2 now rechecks the real
+request. The next milestone is to complete the short learning gate, then connect
+authorization to the reducer and durable execution path.
 
 ## Relationship to the other labs
 

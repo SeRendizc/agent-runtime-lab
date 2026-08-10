@@ -97,17 +97,38 @@ Lucas understanding gate:
 
 ## Current milestone — R3.2 ToolRequest authorization
 
-Next:
+Implemented and verified:
 
-1. Define the real `ToolRequest` contract, including actual tool name,
-   arguments, target paths, and run/step identity.
-2. Define deterministic allow, deny, and escalation results with reasons.
-3. Re-evaluate the actual request instead of treating `OwnershipDecision` as an
-   authorization token.
-4. Cover destructive tools, unknown tools, path escape, normal allowed
-   requests, and deterministic repeated decisions.
-5. After the contract and learning gate are stable, connect authorization to
-   the reducer and durable executor.
+- Added immutable, canonical `ToolRequest` with run, step, call, tool, and
+  argument identity.
+- Added deterministic `ALLOW`, `DENY`, and `ESCALATE` decisions with reasons.
+- Added trusted path argument metadata to `ToolDefinition`.
+- Added a workspace boundary that rejects traversal, absolute paths, Windows
+  drive paths, and malformed targets.
+- Re-evaluated real tool names and normalized paths through Runtime-owned risk
+  and ownership policy.
+- Covered normal allow, unknown tool, path escape, malformed path, core path,
+  destructive tool, global PAIR minimum, and repeated-decision cases.
+
+Evidence:
+
+```text
+Branch: durable-tool-execution-recovery
+Commit: 2add6c8
+Authorization: 10 passed
+Full suite: 85 passed in 0.33s
+Ruff: All checks passed!
+Format: 32 files already formatted
+Remote: branch pushed
+PR: not opened
+```
+
+Pending before marking R3.2 complete:
+
+- Lucas explains classification versus authorization, registry versus
+  workspace rejection, and escalation versus denial.
+- Then connect the verified authorization contract to the reducer and durable
+  executor.
 
 Still deferred:
 
