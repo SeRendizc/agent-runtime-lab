@@ -158,7 +158,8 @@ Evidence:
 
 ```text
 Branch: durable-tool-execution-recovery (publish target)
-Code commit: 4200871
+Published code commit: f880cdd
+Published docs commit: 6955650
 R3.3 targeted tests: 18 passed
 Full suite: 93 passed in 0.51s
 Ruff: All checks passed!
@@ -178,7 +179,7 @@ Important boundary:
 - Revision rollover/new-proposal invalidation is represented in the contract
   but replacement-proposal orchestration is not yet implemented.
 
-Lucas understanding gate — pending:
+Lucas understanding gate — completed 2026-08-10:
 
 - Explain why `ESCALATE` is a coarse Runtime action while PAIR/USER_GATE are
   precise ownership modes.
@@ -186,6 +187,45 @@ Lucas understanding gate — pending:
   boolean `approved=True`.
 - Explain which guarantee proposal digest provides and which authentication
   guarantee it deliberately does not provide.
+
+Lucas explained that exact proposal binding prevents the approved object from
+being substituted, while it neither proves the proposal is correct nor
+authenticates the approving actor. He also distinguished the shared pause/replay
+substrate from the different PAIR and USER_GATE evaluation semantics.
+
+## Current milestone — R3.3b USER_GATE evaluation attempts
+
+Infrastructure implemented and verified locally at `c2989b3`:
+
+- Added immutable canonical `GateAnswerSubmission`.
+- Added persistable `GateEvaluation` with `PASS`, `RETRY`, and `BLOCK`.
+- Added `gate.evaluated` events and durable attempt/max-attempt state.
+- Enforced monotonic attempts and fail-closed retry exhaustion in the Reducer.
+- Prevented `GateResolution.approve(...)` from bypassing USER_GATE evaluation.
+- Preserved PAIR review through the existing approval/rejection path.
+- Replayed failed attempts across restart and continued at the next attempt.
+- Recovered a passed answer after a crash before `TOOL_STARTED`.
+- Kept the default `evaluate_gate(gate, answer)` body as an explicit
+  `DeveloperOwnedImplementationRequired` boundary; Fake Evaluators verify the
+  surrounding Runtime without bypassing that boundary.
+
+Evidence:
+
+```text
+Local code commit: c2989b3
+R3.3 targeted tests: 25 passed
+Full suite: 100 passed in 0.64s
+Ruff: All checks passed!
+Format: 35 files already formatted
+Remote: R3.3b not published; developer-owned evaluator pending
+```
+
+Next executable step:
+
+1. Lucas implements only `evaluate_gate(...)` in `ownership/gates.py`.
+2. Replace the boundary-error test with concrete PASS/RETRY/BLOCK behavior
+   contracts without weakening the injected-evaluator infrastructure tests.
+3. Re-run targeted/full verification, explain the data flow, then publish R3.3b.
 
 Still deferred:
 

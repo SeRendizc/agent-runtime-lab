@@ -12,9 +12,12 @@ duplicating tool effects or bypassing user gates.
 The active development branch is `durable-tool-execution-recovery`. The
 deterministic R1 core, durable R2 tool-effect path, R3.1 ownership step
 classification, the R3.2 authorization contract, and the R3.3a durable gate
-control path are implemented and verified on that branch.
+control path are implemented and published on that branch. R3.3b USER_GATE
+attempt persistence is locally implemented and verified; its final evaluator
+remains the explicit developer-owned learning boundary.
 
-Current code evidence at `4200871`:
+Published R3.3a evidence is `f880cdd` / `6955650`. Local R3.3b scaffold evidence
+is `c2989b3`:
 
 - immutable events, run state, lifecycle reduction, and ordered replay;
 - SQLite tool intents and receipts with crash-window recovery;
@@ -32,11 +35,15 @@ Current code evidence at `4200871`:
 - durable PAIR / USER_GATE proposals bound to the exact request, revision, and
   proposal digest;
 - event-replayed pause, approval, rejection, restart, and pre-tool recovery;
-- 93 tests pass, Ruff passes, and 35 files pass the format check.
+- operational separation between PAIR approval and USER_GATE answer evaluation;
+- canonical gate answers, durable attempt counts, `PASS / RETRY / BLOCK`,
+  bounded retry exhaustion, and post-pass crash recovery;
+- 100 tests pass, Ruff passes, and 35 files pass the format check.
 
-These changes have been pushed to the development branch but are not claimed
-as merged to `main`. The runtime is still a validation spike, not a production
-sandbox or a complete agent loop.
+R3.3a has been pushed to the development branch; the R3.3b scaffold is not yet
+published and is not claimed as complete until Lucas implements and explains
+`evaluate_gate(...)`. Nothing is claimed as merged to `main`. The runtime is
+still a validation spike, not a production sandbox or a complete agent loop.
 
 The intended scope is:
 
@@ -66,18 +73,21 @@ Real ToolRequest
   -> deny: record failure without a tool effect
   -> allow: execute through the Durable Tool Executor
   -> escalate: persist an exact Gate Proposal and stop
-       -> matching approval: resume the persisted request
+       -> PAIR: matching review approval resumes the persisted request
+       -> USER_GATE: evaluate a bounded answer as PASS / RETRY / BLOCK
        -> rejection: fail without a tool effect
 ```
 
 `OwnershipDecision` is not an authorization token. `AuthorizationOutcome` is
 also not a gate approval: `ESCALATE` means the Runtime must persist and wait.
-R3.3a now enforces that wait in the reducer and durable execution path.
+R3.3 now enforces that wait in the reducer and durable execution path. A
+USER_GATE cannot be bypassed with the PAIR approval API.
 
 Gate references bind an approval to the exact proposal, but do not authenticate
 the human actor. Production identity and session authentication belong at the
-trusted UI/API boundary. USER_GATE answer evaluation and durable attempt counts
-remain the next contract rather than being hidden behind a generic approval.
+trusted UI/API boundary. Durable USER_GATE attempt infrastructure is present,
+while the final domain-specific `evaluate_gate(...)` logic remains intentionally
+developer-owned.
 
 ## Relationship to the other labs
 
