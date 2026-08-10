@@ -195,7 +195,7 @@ substrate from the different PAIR and USER_GATE evaluation semantics.
 
 ## Current milestone — R3.3b USER_GATE evaluation attempts
 
-Infrastructure implemented and verified locally at `c2989b3`:
+Implementation and verification complete; Lucas understanding gate pending:
 
 - Added immutable canonical `GateAnswerSubmission`.
 - Added persistable `GateEvaluation` with `PASS`, `RETRY`, and `BLOCK`.
@@ -205,27 +205,41 @@ Infrastructure implemented and verified locally at `c2989b3`:
 - Preserved PAIR review through the existing approval/rejection path.
 - Replayed failed attempts across restart and continued at the next attempt.
 - Recovered a passed answer after a crash before `TOOL_STARTED`.
-- Kept the default `evaluate_gate(gate, answer)` body as an explicit
-  `DeveloperOwnedImplementationRequired` boundary; Fake Evaluators verify the
-  surrounding Runtime without bypassing that boundary.
+- Implemented the default `evaluate_gate(gate, answer)` contract:
+  - explicit `refuse=True` returns `BLOCK`;
+  - missing or incorrectly typed fields return `RETRY`;
+  - mismatched tool/path identity returns `RETRY`;
+  - fewer than 20 non-whitespace explanation characters returns `RETRY`;
+  - an exact, sufficiently explained answer returns `PASS`.
+- Kept injected Fake Evaluators for deterministic Runtime infrastructure tests
+  while adding real default-evaluator integration tests.
+- Removed the obsolete developer-owned placeholder exception.
 
 Evidence:
 
 ```text
-Local code commit: c2989b3
-R3.3 targeted tests: 25 passed
-Full suite: 100 passed in 0.64s
+Attempt infrastructure commit: c2989b3
+Concrete evaluator commit: 90a384e
+R3.3 targeted tests: 31 passed
+Full suite: 106 passed in 0.93s
 Ruff: All checks passed!
 Format: 35 files already formatted
-Remote: R3.3b not published; developer-owned evaluator pending
+Remote: publication pending
 ```
+
+Workflow decision:
+
+- Accelerated mode is `AI implements and verifies -> AI teaches from the real
+  code -> Lucas answers the understanding gate -> continue`.
+- Knowledge ownership is measured by explanation and review, not by requiring
+  Lucas to personally type reserved functions.
 
 Next executable step:
 
-1. Lucas implements only `evaluate_gate(...)` in `ownership/gates.py`.
-2. Replace the boundary-error test with concrete PASS/RETRY/BLOCK behavior
-   contracts without weakening the injected-evaluator infrastructure tests.
-3. Re-run targeted/full verification, explain the data flow, then publish R3.3b.
+1. Publish R3.3b and synchronize the project control documents.
+2. Explain the real evaluation and Runtime data flow to Lucas.
+3. Complete the understanding gate.
+4. Continue with revision rollover and replacement-proposal invalidation.
 
 Still deferred:
 
