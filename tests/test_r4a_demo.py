@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from agent_runtime_lab.r4a_demo import run_demo
+from examples.r4a_restricted_file_demo import run_demo
 
 
 def test_demo_returns_sanitized_real_runtime_evidence() -> None:

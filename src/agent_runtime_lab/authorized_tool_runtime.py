@@ -32,6 +32,7 @@ from agent_runtime_lab.ownership.gates import (
     evaluate_gate,
 )
 from agent_runtime_lab.ownership.policy import OwnershipMode
+from agent_runtime_lab.verification import VerificationOutcome, VerificationResult
 
 
 class EventStore(Protocol):
@@ -359,6 +360,31 @@ class AuthorizedToolRuntime:
         """Rebuild current state exclusively from durable events."""
 
         return replay(run_id, self._event_store.load(run_id))
+
+    def record_verification(
+        self,
+        run_id: str,
+        result: VerificationResult,
+    ) -> RunState:
+        """Persist trusted verification evidence and derive the terminal state."""
+
+        payload: dict[str, Any] = {
+            "checks": [
+                {
+                    "name": check.name,
+                    "passed": check.passed,
+                    "message": check.message,
+                }
+                for check in result.checks
+            ],
+            "summary": result.summary,
+        }
+        if result.outcome is VerificationOutcome.FAILED:
+            payload["reason"] = result.summary
+            event_type = EventType.VERIFICATION_FAILED
+        else:
+            event_type = EventType.VERIFICATION_SUCCEEDED
+        return self._append(run_id, event_type, payload)
 
     def _execute(
         self,
