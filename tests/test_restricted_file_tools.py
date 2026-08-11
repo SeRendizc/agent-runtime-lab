@@ -1,4 +1,7 @@
 import hashlib
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -130,6 +133,36 @@ def test_execution_rejects_symlink_component(tmp_path: Path) -> None:
         assert not outside.joinpath("outside.txt").exists()
     finally:
         link.unlink(missing_ok=True)
+        outside.rmdir()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows reparse-point test")
+def test_execution_rejects_windows_directory_junction(tmp_path: Path) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-junction-target"
+    outside.mkdir()
+    junction = tmp_path / "junction"
+    command = os.environ.get("COMSPEC", "cmd.exe")
+    created = subprocess.run(
+        [command, "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        outside.rmdir()
+        pytest.skip("directory junction creation is unavailable")
+
+    runner = RestrictedFileToolRunner(WorkspaceBoundary(tmp_path))
+    try:
+        with pytest.raises(WorkspaceExecutionError):
+            runner.invoke(
+                tool_name="write_file",
+                arguments={"path": "junction/outside.txt", "content": "blocked"},
+                idempotency_key="effect-1",
+            )
+        assert not outside.joinpath("outside.txt").exists()
+    finally:
+        junction.rmdir()
         outside.rmdir()
 
 
