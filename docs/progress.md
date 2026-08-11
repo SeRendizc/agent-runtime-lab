@@ -255,15 +255,17 @@ Implementation and verification complete; Lucas understanding gate pending:
   attempt limit while resetting attempts to zero for the new proposal.
 - Invalidated old PAIR approvals and USER_GATE answers at Runtime entry points.
 - Covered restart after rollover and policy upgrades from PAIR to USER_GATE.
-- Kept concurrent rollover fail-closed through the Event Store's unique
-  `(run_id, sequence)` append contract; only one competing event can commit.
+- Kept concurrent rollover deterministic through the Event Store transaction:
+  exact redelivery is coalesced into one durable event, while a conflicting
+  proposal for the same event identity fails closed instead of being promoted
+  to an unreviewed later revision.
 
 Evidence:
 
 ```text
 Published code commit: f810ca9
-Targeted Runtime + Reducer tests: 38 passed
-Full suite: 113 passed
+Targeted Runtime + Reducer + Event Store tests: 46 passed
+Full suite: 115 passed
 Ruff: All checks passed!
 Format: 35 Python files already formatted
 Remote: published on durable-tool-execution-recovery

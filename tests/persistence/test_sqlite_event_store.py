@@ -1,5 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -139,3 +141,74 @@ def test_each_run_has_an_independent_sequence(
     assert store.load("run-2") == [run_two_event]
 
     store.close()
+
+
+def _append_from_new_connection(
+    database_path: Path,
+    event: ExecutionEvent,
+    barrier: Barrier,
+) -> None:
+    with SQLiteEventStore(database_path) as store:
+        barrier.wait(timeout=5)
+        store.append(event)
+
+
+def test_concurrent_exact_redelivery_commits_one_event(tmp_path: Path) -> None:
+    database_path = tmp_path / "runtime.db"
+    with SQLiteEventStore(database_path):
+        pass
+    event = make_event(
+        0,
+        EventType.GATE_REVISED,
+        event_id="run-1:0:gate.revised",
+        payload={"proposal_digest": "a" * 64, "revision": 2},
+    )
+    barrier = Barrier(2)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(_append_from_new_connection, database_path, event, barrier)
+            for _ in range(2)
+        ]
+        for future in futures:
+            future.result()
+
+    with SQLiteEventStore(database_path) as store:
+        assert store.load("run-1") == [event]
+
+
+def test_concurrent_conflicting_redelivery_fails_closed(tmp_path: Path) -> None:
+    database_path = tmp_path / "runtime.db"
+    with SQLiteEventStore(database_path):
+        pass
+    first = make_event(
+        0,
+        EventType.GATE_REVISED,
+        event_id="run-1:0:gate.revised",
+        payload={"proposal_digest": "a" * 64, "revision": 2},
+    )
+    conflicting = make_event(
+        0,
+        EventType.GATE_REVISED,
+        event_id="run-1:0:gate.revised",
+        payload={"proposal_digest": "b" * 64, "revision": 2},
+    )
+    barrier = Barrier(2)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(_append_from_new_connection, database_path, event, barrier)
+            for event in (first, conflicting)
+        ]
+        outcomes = []
+        for future in futures:
+            try:
+                future.result()
+            except DuplicateEventConflictError:
+                outcomes.append("conflict")
+            else:
+                outcomes.append("committed")
+
+    assert sorted(outcomes) == ["committed", "conflict"]
+    with SQLiteEventStore(database_path) as store:
+        assert store.count("run-1") == 1

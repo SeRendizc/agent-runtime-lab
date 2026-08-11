@@ -41,7 +41,7 @@ understanding-gate evidence is `c2989b3` plus `90a384e`:
   bounded retry exhaustion, and post-pass crash recovery;
 - proposal revision rollover, policy-mode upgrades, and stale-reference
   invalidation across restart;
-- 113 tests pass, Ruff passes, and 35 Python files pass the format check.
+- 115 tests pass, Ruff passes, and 35 Python files pass the format check.
 
 R3.3a and R3.3b have been pushed to the development branch, and Lucas completed
 the R3.3b understanding gate. R3.3c implements proposal revision rollover and
