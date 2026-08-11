@@ -29,6 +29,10 @@ class MissingToolIntentError(RuntimeContractError):
     """A receipt was persisted before its corresponding intent."""
 
 
+class MissingVerificationEvidenceError(RuntimeContractError):
+    """A verifying run has no matching durable successful receipt."""
+
+
 class UnsafeToolRetryError(RuntimeContractError):
     """An incomplete non-idempotent tool effect cannot be retried safely."""
 

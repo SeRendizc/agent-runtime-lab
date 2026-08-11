@@ -11,8 +11,8 @@ duplicating tool effects or bypassing user gates.
 
 The active development branch is `durable-tool-execution-recovery`. The
 deterministic R1 core, durable R2 tool-effect path, R3 ownership and gate path,
-R4a restricted file-tool path, and R4b verification/Fake Agent loop are
-implemented on that branch.
+R4a restricted file-tool path, R4b verification/Fake Agent loop, and R4c
+verification crash recovery are implemented on that branch.
 R3.3c proposal revision rollover, concurrent duplicate semantics, and its
 understanding correction are complete. The R4a demonstration now lives under
 `examples/` rather than the reusable Runtime package.
@@ -57,10 +57,12 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
   moves `VERIFYING` to a terminal state;
 - a static Fake Agent proving a real read through Authorization, Receipt,
   Verification, Event replay, and `COMPLETED` while DENY/Gate cannot self-pass;
-- 159 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
+- recovery from a crash after `TOOL_SUCCEEDED` by loading the original durable
+  Receipt and verifying it without invoking the Tool again;
+- 161 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
   and 46 Python files pass the format check.
 
-R3.3, R4a, and R4b engineering are on the development branch. Nothing is
+R3.3, R4a, R4b, and R4c engineering are on the development branch. Nothing is
 claimed as merged to `main`. R4a is an in-process restricted file runner for a
 dedicated non-secret temporary workspace. Its path check and I/O are not one
 kernel-atomic operation, so a hostile concurrent process can still create a
@@ -128,6 +130,12 @@ expected predecessor identity and the new `revision + 1` identity. Reducer
 replay atomically replaces the active proposal, resets attempts for the new
 USER_GATE revision, and makes every prior digest/revision unusable at the
 resolution entry points.
+
+If the bounded Fake Agent crashes after the durable Tool Result but before a
+Verification Event, the run remains `VERIFYING`. Recovery follows the persisted
+`tool.succeeded.effect_id` to the original Receipt, reruns only the pure
+verification checks, and then records the terminal Event. It never resubmits
+the ToolRequest or repeats the external effect.
 
 ## Learning workflow
 

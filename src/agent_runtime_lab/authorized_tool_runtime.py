@@ -8,7 +8,11 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
-from agent_runtime_lab.domain.errors import GateReferenceMismatchError, InvalidTransitionError
+from agent_runtime_lab.domain.errors import (
+    GateReferenceMismatchError,
+    InvalidTransitionError,
+    MissingVerificationEvidenceError,
+)
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
 from agent_runtime_lab.domain.replay import replay
 from agent_runtime_lab.domain.state import RunState, RunStatus
@@ -385,6 +389,34 @@ class AuthorizedToolRuntime:
         else:
             event_type = EventType.VERIFICATION_SUCCEEDED
         return self._append(run_id, event_type, payload)
+
+    def load_verification_receipt(self, run_id: str) -> ToolReceipt:
+        """Recover durable successful evidence for a run awaiting verification."""
+
+        state = self.load_state(run_id)
+        if state.status is not RunStatus.VERIFYING:
+            raise InvalidTransitionError(
+                f"verification recovery requires verifying, got {state.status.value}"
+            )
+
+        for event in reversed(self._event_store.load(run_id)):
+            if event.event_type is not EventType.TOOL_SUCCEEDED:
+                continue
+            effect_id = event.payload.get("effect_id")
+            if not isinstance(effect_id, str) or not effect_id:
+                raise MissingVerificationEvidenceError(
+                    "tool.succeeded has no durable effect identity"
+                )
+            receipt = self._executor.load_receipt(effect_id)
+            if receipt is None or receipt.outcome is not ToolOutcome.SUCCEEDED:
+                raise MissingVerificationEvidenceError(
+                    "verifying run has no matching successful receipt"
+                )
+            return receipt
+
+        raise MissingVerificationEvidenceError(
+            "verifying run has no persisted tool.succeeded event"
+        )
 
     def _execute(
         self,

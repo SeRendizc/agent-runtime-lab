@@ -381,3 +381,34 @@ Still deferred:
 - Cloud sandboxing and production worker orchestration.
 - Starting the standalone CodeOwnership Skill or cross-project S6 work before
   Runtime authorization and gate recovery are stable.
+
+## Current milestone — R4c verification crash recovery
+
+Engineering implemented and verified; Lucas understanding gate remains:
+
+- Added a Fake Agent checkpoint immediately after a durable Tool Result and
+  before verification, allowing the exact crash window to be injected.
+- Added Runtime recovery of the successful Receipt referenced by the persisted
+  `tool.succeeded.effect_id` while the replayed state is `VERIFYING`.
+- Added a read-only Durable Executor receipt lookup; recovery does not call the
+  Tool Runner or persist a second Intent/Receipt.
+- Added fail-closed errors for non-`VERIFYING` recovery and missing or
+  inconsistent verification evidence.
+- Proved restart recovery reaches `COMPLETED` with exactly one `tool.started`
+  Event.
+
+Evidence:
+
+```text
+Import fix: d753665
+R4c targeted tests: 17 passed
+Full suite: 161 passed, 1 skipped
+Ruff: All checks passed!
+Format: 46 Python files already formatted
+```
+
+Next executable step:
+
+1. Teach the R3.2-to-R4c file responsibilities and R4c recovery invariant.
+2. Complete the R4c understanding gate before selecting bounded step/timeout
+   controls or the Model Adapter boundary.

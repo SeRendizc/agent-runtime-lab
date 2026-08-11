@@ -117,6 +117,11 @@ class DurableToolExecutor:
 
         return self._invoke_and_record(intent)
 
+    def load_receipt(self, effect_id: str) -> ToolReceipt | None:
+        """Load already-persisted tool evidence without invoking the tool."""
+
+        return self._store.load_receipt(effect_id)
+
     def _invoke_and_record(self, intent: ToolIntent) -> ToolReceipt:
         try:
             output = self._runner.invoke(

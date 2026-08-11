@@ -12,7 +12,7 @@ from agent_runtime_lab.domain.errors import InvalidTransitionError
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
 from agent_runtime_lab.domain.state import RunStatus
 from agent_runtime_lab.durable_tool_executor import DurableToolExecutor
-from agent_runtime_lab.fake_agent import FakeAgent
+from agent_runtime_lab.fake_agent import FakeAgent, FakeAgentCheckpoint
 from agent_runtime_lab.ownership.authorization import (
     AuthorizationContext,
     ToolRequest,
@@ -33,6 +33,16 @@ from agent_runtime_lab.restricted_file_tools import (
 from agent_runtime_lab.verification import ReceiptVerifier, VerificationExpectation
 
 NOW = datetime(2026, 8, 11, tzinfo=UTC)
+
+
+class SimulatedCrash(RuntimeError):
+    pass
+
+
+class CrashAfterToolResult:
+    def reach(self, checkpoint: FakeAgentCheckpoint) -> None:
+        assert checkpoint is FakeAgentCheckpoint.AFTER_TOOL_RESULT
+        raise SimulatedCrash("crashed after durable tool result")
 
 
 def make_runtime(
@@ -157,6 +167,74 @@ def test_fake_agent_wrong_digest_fails_run(tmp_path: Path) -> None:
     assert result.state.status is RunStatus.FAILED
     assert result.verification.passed is False
     assert events.load("run-failed-verification")[-1].event_type is EventType.VERIFICATION_FAILED
+    events.close()
+    effects.close()
+
+
+def test_fake_agent_recovers_verification_without_rerunning_tool(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    content = "durable verification evidence"
+    workspace.joinpath("notes.txt").write_text(content, encoding="utf-8")
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_run(events, "run-verification-recovery")
+    tool_request = request(run_id="run-verification-recovery")
+    crashing_agent = FakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        request=tool_request,
+        failure_injector=CrashAfterToolResult(),
+    )
+    expectation = VerificationExpectation(
+        path="notes.txt",
+        sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    )
+
+    with pytest.raises(SimulatedCrash, match="after durable tool result"):
+        crashing_agent.run(expectation)
+
+    events_before_recovery = events.load("run-verification-recovery")
+    assert runtime.load_state("run-verification-recovery").status is RunStatus.VERIFYING
+    assert events_before_recovery[-1].event_type is EventType.TOOL_SUCCEEDED
+    events.close()
+    effects.close()
+
+    recovered_runtime, recovered_events, recovered_effects = make_runtime(tmp_path, workspace)
+    recovered_agent = FakeAgent(
+        runtime=recovered_runtime,
+        verifier=ReceiptVerifier(),
+        request=tool_request,
+    )
+
+    result = recovered_agent.recover_verification(expectation)
+
+    persisted_events = recovered_events.load("run-verification-recovery")
+    assert result.state.status is RunStatus.COMPLETED
+    assert result.verification.passed is True
+    assert result.receipt.effect_id == events_before_recovery[-1].payload["effect_id"]
+    assert persisted_events[-1].event_type is EventType.VERIFICATION_SUCCEEDED
+    assert sum(event.event_type is EventType.TOOL_STARTED for event in persisted_events) == 1
+    recovered_events.close()
+    recovered_effects.close()
+
+
+def test_fake_agent_recovery_rejects_non_verifying_run(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_run(events, "run-ready")
+    agent = FakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        request=request(run_id="run-ready"),
+    )
+
+    with pytest.raises(
+        InvalidTransitionError,
+        match="verification recovery requires verifying, got ready",
+    ):
+        agent.recover_verification(VerificationExpectation(path="notes.txt", sha256="0" * 64))
+
     events.close()
     effects.close()
 
