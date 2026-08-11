@@ -12,9 +12,8 @@ duplicating tool effects or bypassing user gates.
 The active development branch is `durable-tool-execution-recovery`. The
 deterministic R1 core, durable R2 tool-effect path, R3 ownership and gate path,
 R4a restricted file-tool path, R4b verification/Fake Agent loop, R4c
-verification crash recovery, and the local R4d timeout-evidence path are
-implemented on that branch. R4d remains unpublished until the GitHub CLI
-publishing prerequisite is available.
+verification crash recovery, R4d timeout evidence, and the local R4e static
+Model Adapter / Action boundary are implemented on that branch.
 R3.3c proposal revision rollover, concurrent duplicate semantics, and its
 understanding correction are complete. The R4a demonstration now lives under
 `examples/` rather than the reusable Runtime package.
@@ -64,10 +63,13 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
 - a distinct Runner-enforced timeout signal, durable `TIMED_OUT` Receipt,
   `tool.timed_out` Event, replayed `FAILED` state, and lossless migration of the
   pre-R4d SQLite receipt constraint;
-- 165 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
-  and 46 Python files pass the format check.
+- immutable Runtime-owned `ModelInput`, untrusted `ToolCallAction` and
+  `FinalAnswerAction`, deterministic `StaticModelAdapter`, and trusted
+  Action-to-`ToolRequest` compilation;
+- 177 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
+  and 46 package/test Python files pass the format check.
 
-R3.3 and R4a-R4c engineering are published on the development branch; R4d is
+R3.3 and R4a-R4d engineering are published on the development branch; R4e is
 currently a verified local change. Nothing is claimed as merged to `main`. R4a
 is an in-process restricted file runner for a dedicated non-secret temporary
 workspace. Its path check and I/O are not one kernel-atomic operation, so a
@@ -144,6 +146,12 @@ Verification Event, the run remains `VERIFYING`. Recovery follows the persisted
 `tool.succeeded.effect_id` to the original Receipt, reruns only the pure
 verification checks, and then records the terminal Event. It never resubmits
 the ToolRequest or repeats the external effect.
+
+R4e gives a future model only immutable `ModelInput` and accepts one validated
+Action in return. A Tool Action does not carry trusted run or step identity;
+the Runtime adds those fields when compiling the existing `ToolRequest`. A
+Final Answer remains an untrusted proposal and has no API that directly emits
+`verification.succeeded` or changes State to `COMPLETED`.
 
 ## Learning workflow
 

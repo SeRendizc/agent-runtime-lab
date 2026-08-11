@@ -35,6 +35,14 @@ class MissingVerificationEvidenceError(RuntimeContractError):
     """A verifying run has no matching durable successful receipt."""
 
 
+class ModelActionValidationError(RuntimeContractError):
+    """An untrusted Model Adapter output violates the Action contract."""
+
+
+class ModelAdapterExhaustedError(RuntimeContractError):
+    """A deterministic static adapter has no Action for the requested turn."""
+
+
 class UnsafeToolRetryError(RuntimeContractError):
     """An incomplete non-idempotent tool effect cannot be retried safely."""
 

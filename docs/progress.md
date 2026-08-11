@@ -384,7 +384,7 @@ Still deferred:
 
 ## Current milestone — R4c verification crash recovery
 
-Engineering implemented and verified; Lucas understanding gate remains:
+Engineering, publication, and Lucas understanding gate complete:
 
 - Added a Fake Agent checkpoint immediately after a durable Tool Result and
   before verification, allowing the exact crash window to be injected.
@@ -407,16 +407,18 @@ Ruff: All checks passed!
 Format: 46 Python files already formatted
 ```
 
-Next executable step:
+Lucas understanding gate — completed 2026-08-11:
 
-1. Teach the R3.2-to-R4c file responsibilities and R4c recovery invariant.
-2. Complete the R4c understanding gate before selecting bounded step/timeout
-   controls or the Model Adapter boundary.
+- Explained that resubmitting the persisted request would represent a new Tool
+  execution and could repeat an external side effect.
+- Explained why missing Receipt evidence after `tool.succeeded` must fail closed
+  instead of rerunning the Tool.
+- Restricted verification recovery to `VERIFYING`; `READY` has no successful
+  Receipt to verify and `COMPLETED` is already terminal.
 
 ## Current milestone — R4d durable timeout evidence
 
-Engineering implemented and locally verified; publication and Lucas
-understanding gate remain:
+Engineering, publication, and Lucas understanding gate complete:
 
 - Added `ToolTimeoutError(timeout_seconds)` as the typed signal emitted only
   after a Tool Runner or isolated worker has enforced its own deadline.
@@ -430,20 +432,58 @@ understanding gate remain:
   observes and persists the Runner's timeout, but cannot safely kill arbitrary
   Python tool code.
 
-Local evidence:
+Evidence:
 
 ```text
+Implementation: 714626d
 R4d targeted tests: 57 passed
 Full suite: 165 passed, 1 skipped
 Ruff: All checks passed!
 Format: 46 Python files already formatted
 Diff check: clean
-Publish: blocked because gh is not installed in the current environment
+```
+
+Lucas understanding gate — completed 2026-08-11:
+
+- Distinguished a caller-observed thread wait timeout from actual Tool
+  termination.
+- Explained why timeout evidence must remain distinct for recovery, audit, and
+  retry policy because background execution may be unknown.
+- Explained why the SQLite migration must preserve existing Receipts as durable
+  recovery evidence.
+
+## Current milestone — R4e static Model Adapter / Action boundary
+
+Engineering implemented and locally verified; publication and Lucas
+understanding gate remain:
+
+- Added immutable canonical `ModelInput` containing Runtime-owned run, step,
+  turn, state-status, and trusted observation fields.
+- Added untrusted `ToolCallAction` and `FinalAnswerAction` contracts.
+- Added a `ModelAdapter` Protocol and deterministic `StaticModelAdapter` with no
+  hidden cursor; the Runtime-supplied `turn_index` selects the Action.
+- Added fail-closed validation for unknown Action types and exhausted static
+  scripts.
+- Added `tool_request_from_action(...)`, which only accepts a Tool Action in
+  `READY` and supplies trusted `run_id` / `step_id` from `ModelInput`.
+- Deliberately left `FinalAnswerAction` unable to emit a completion Event or
+  mutate Runtime State.
+- Proved a static Tool Action flows through the existing real restricted-file,
+  authorization, durable Receipt, verification, and terminal-state path.
+
+Local evidence:
+
+```text
+R4e targeted tests: 18 passed
+Full suite: 177 passed, 1 skipped
+Ruff: All checks passed!
+Format: 46 package/test Python files already formatted
+Diff check: clean
 ```
 
 Next executable step:
 
-1. Complete the R4d timeout ownership and persistence understanding gate.
-2. Install/authenticate GitHub CLI, then commit and push the verified R4d diff.
-3. After publication, implement a bounded step budget at the future Agent Loop
-   boundary or define the Model Adapter contract; do not add an unbounded loop.
+1. Publish R4e as one atomic commit and synchronize the active project facts.
+2. Teach the Action trust boundary and complete the R4e understanding gate.
+3. Design durable turn/step Events and a bounded multi-step loop before adding
+   Runtime-owned maximum-step exhaustion.

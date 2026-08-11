@@ -13,6 +13,13 @@ from agent_runtime_lab.domain.events import EventType, ExecutionEvent
 from agent_runtime_lab.domain.state import RunStatus
 from agent_runtime_lab.durable_tool_executor import DurableToolExecutor
 from agent_runtime_lab.fake_agent import FakeAgent, FakeAgentCheckpoint
+from agent_runtime_lab.model_adapter import (
+    ModelInput,
+    StaticModelAdapter,
+    ToolCallAction,
+    request_model_action,
+    tool_request_from_action,
+)
 from agent_runtime_lab.ownership.authorization import (
     AuthorizationContext,
     ToolRequest,
@@ -146,6 +153,53 @@ def test_fake_agent_closes_real_read_with_verification_evidence(tmp_path: Path) 
     evidence_json = json.dumps(events.load("run-success")[-1].payload)
     assert content not in evidence_json
     assert str(workspace) not in evidence_json
+    events.close()
+    effects.close()
+
+
+def test_static_model_action_flows_through_runtime_owned_request_identity(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    content = "adapter boundary evidence"
+    workspace.joinpath("notes.txt").write_text(content, encoding="utf-8")
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_run(events, "run-model-action")
+    context = ModelInput.build(
+        run_id="run-model-action",
+        step_id="step-1",
+        turn_index=0,
+        state_status=runtime.load_state("run-model-action").status,
+    )
+    adapter = StaticModelAdapter(
+        actions=(
+            ToolCallAction.build(
+                tool_call_id="call-1",
+                tool_name="read_file",
+                arguments={"path": "notes.txt"},
+            ),
+        )
+    )
+    action = request_model_action(adapter, context)
+    agent = FakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        request=tool_request_from_action(context, action),
+    )
+
+    result = agent.run(
+        VerificationExpectation(
+            path="notes.txt",
+            sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        )
+    )
+
+    assert result.state.status is RunStatus.COMPLETED
+    requested = events.load("run-model-action")[2]
+    assert requested.event_type is EventType.TOOL_REQUESTED
+    assert requested.payload["step_id"] == "step-1"
+    assert requested.payload["tool_call_id"] == "call-1"
     events.close()
     effects.close()
 
