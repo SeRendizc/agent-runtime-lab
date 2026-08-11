@@ -1,7 +1,7 @@
 # R4b Verification Evidence and Fake Agent Design
 
 Date: 2026-08-11
-Status: design approved; written specification awaiting final review
+Status: approved for implementation
 
 ## Objective
 
