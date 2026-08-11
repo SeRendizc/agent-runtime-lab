@@ -157,6 +157,28 @@ def test_denied_tool_terminates_with_reason() -> None:
     assert state.failure_reason == "outside workspace"
 
 
+def test_timed_out_tool_terminates_with_distinct_failure_reason() -> None:
+    state = apply(
+        ready_state(),
+        event(2, EventType.TOOL_REQUESTED, payload={"tool_call_id": "tool-1"}),
+        event(3, EventType.TOOL_AUTHORIZED, payload={"tool_call_id": "tool-1"}),
+        event(4, EventType.TOOL_STARTED, payload={"tool_call_id": "tool-1"}),
+        event(
+            5,
+            EventType.TOOL_TIMED_OUT,
+            payload={
+                "tool_call_id": "tool-1",
+                "reason": "tool execution exceeded 2.5 seconds",
+                "timeout_seconds": 2.5,
+            },
+        ),
+    )
+
+    assert state.status is RunStatus.FAILED
+    assert state.failure_reason == "tool execution exceeded 2.5 seconds"
+    assert state.active_tool_call_id is None
+
+
 def test_escalated_tool_waits_for_matching_gate_approval() -> None:
     state = apply(
         ready_state(),

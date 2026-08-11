@@ -1,5 +1,7 @@
 """Typed failures for deterministic runtime contracts."""
 
+import math
+
 
 class RuntimeContractError(ValueError):
     """Base class for invalid deterministic-runtime input."""
@@ -35,6 +37,16 @@ class MissingVerificationEvidenceError(RuntimeContractError):
 
 class UnsafeToolRetryError(RuntimeContractError):
     """An incomplete non-idempotent tool effect cannot be retried safely."""
+
+
+class ToolTimeoutError(RuntimeError):
+    """A Tool Runner reports that its enforced execution deadline expired."""
+
+    def __init__(self, timeout_seconds: float) -> None:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be finite and positive")
+        self.timeout_seconds = timeout_seconds
+        super().__init__(f"tool execution exceeded {timeout_seconds:g} seconds")
 
 
 class UnknownToolError(RuntimeContractError):

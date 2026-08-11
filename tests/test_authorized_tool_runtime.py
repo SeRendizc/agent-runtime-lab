@@ -11,10 +11,14 @@ from agent_runtime_lab.authorized_tool_runtime import (
     AuthorizedToolRuntime,
     RuntimeToolOutcome,
 )
-from agent_runtime_lab.domain.errors import GateReferenceMismatchError, InvalidTransitionError
+from agent_runtime_lab.domain.errors import (
+    GateReferenceMismatchError,
+    InvalidTransitionError,
+    ToolTimeoutError,
+)
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
 from agent_runtime_lab.domain.state import RunStatus
-from agent_runtime_lab.domain.tool_effects import derive_effect_id
+from agent_runtime_lab.domain.tool_effects import ToolOutcome, derive_effect_id
 from agent_runtime_lab.durable_tool_executor import DurableToolExecutor
 from agent_runtime_lab.ownership.authorization import (
     AuthorizationContext,
@@ -43,7 +47,8 @@ NOW = datetime(2026, 8, 10, 0, 0, tzinfo=UTC)
 
 
 class RecordingToolRunner:
-    def __init__(self) -> None:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
         self.calls: list[tuple[str, dict[str, Any], str]] = []
 
     def invoke(
@@ -54,6 +59,8 @@ class RecordingToolRunner:
         idempotency_key: str,
     ) -> Mapping[str, Any]:
         self.calls.append((tool_name, dict(arguments), idempotency_key))
+        if self.error is not None:
+            raise self.error
         return {"ok": True}
 
 
@@ -195,6 +202,29 @@ def test_auto_request_is_authorized_then_executed(tmp_path: Path) -> None:
         EventType.TOOL_STARTED,
         EventType.TOOL_SUCCEEDED,
     ]
+
+    event_store.close()
+    effect_store.close()
+
+
+def test_tool_timeout_is_persisted_and_fails_run(tmp_path: Path) -> None:
+    runner = RecordingToolRunner(error=ToolTimeoutError(3))
+    runtime, event_store, effect_store = make_runtime(
+        database_path=tmp_path / "runtime.db",
+        workspace_root=tmp_path,
+        runner=runner,
+    )
+    initialize_run(event_store)
+
+    result = runtime.submit(make_request(tool_name="read_file"))
+
+    assert result.outcome is RuntimeToolOutcome.EXECUTED
+    assert result.receipt is not None
+    assert result.receipt.outcome is ToolOutcome.TIMED_OUT
+    assert result.state.status is RunStatus.FAILED
+    assert result.state.failure_reason == "tool execution exceeded 3 seconds"
+    assert event_store.load("run-1")[-1].event_type is EventType.TOOL_TIMED_OUT
+    assert len(runner.calls) == 1
 
     event_store.close()
     effect_store.close()

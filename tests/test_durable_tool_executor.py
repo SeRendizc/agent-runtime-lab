@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from agent_runtime_lab.domain.errors import (
+    ToolTimeoutError,
     UnknownToolError,
     UnsafeToolRetryError,
 )
@@ -183,6 +184,32 @@ def test_tool_failure_is_persisted_as_failed_receipt(
     assert receipt.output == {
         "error_type": "RuntimeError",
         "message": "disk full",
+    }
+    assert len(runner.calls) == 1
+
+
+def test_tool_timeout_is_persisted_as_distinct_receipt(
+    tmp_path: Path,
+) -> None:
+    intent = make_intent()
+    runner = RecordingToolRunner(error=ToolTimeoutError(2.5))
+
+    with SQLiteToolEffectStore(tmp_path / "runtime.db") as store:
+        executor = DurableToolExecutor(
+            store=store,
+            runner=runner,
+            registry=make_registry(),
+        )
+
+        receipt = executor.execute(intent=intent)
+
+        assert store.load_receipt(intent.effect_id) == receipt
+
+    assert receipt.outcome is ToolOutcome.TIMED_OUT
+    assert receipt.output == {
+        "error_type": "ToolTimeoutError",
+        "message": "tool execution exceeded 2.5 seconds",
+        "timeout_seconds": 2.5,
     }
     assert len(runner.calls) == 1
 

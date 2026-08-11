@@ -441,7 +441,20 @@ class AuthorizedToolRuntime:
         )
         receipt = self._executor.execute(intent=intent)
 
-        if receipt.outcome is ToolOutcome.FAILED:
+        if receipt.outcome is ToolOutcome.TIMED_OUT:
+            reason = receipt.output.get("message")
+            if not isinstance(reason, str) or not reason:
+                reason = "tool execution timed out"
+            state = self._append(
+                request.run_id,
+                EventType.TOOL_TIMED_OUT,
+                {
+                    "reason": reason,
+                    "timeout_seconds": receipt.output.get("timeout_seconds"),
+                    "tool_call_id": request.tool_call_id,
+                },
+            )
+        elif receipt.outcome is ToolOutcome.FAILED:
             reason = receipt.output.get("message")
             if not isinstance(reason, str) or not reason:
                 reason = "tool execution failed"

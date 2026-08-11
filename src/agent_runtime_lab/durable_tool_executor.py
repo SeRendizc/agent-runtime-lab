@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, Protocol
 
-from agent_runtime_lab.domain.errors import UnsafeToolRetryError
+from agent_runtime_lab.domain.errors import ToolTimeoutError, UnsafeToolRetryError
 from agent_runtime_lab.domain.tool_effects import (
     RecoveryDecision,
     ToolIntent,
@@ -128,6 +128,16 @@ class DurableToolExecutor:
                 tool_name=intent.tool_name,
                 arguments=intent.arguments,
                 idempotency_key=intent.idempotency_key,
+            )
+        except ToolTimeoutError as exc:
+            receipt = ToolReceipt.build(
+                effect_id=intent.effect_id,
+                outcome=ToolOutcome.TIMED_OUT,
+                output={
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                    "timeout_seconds": exc.timeout_seconds,
+                },
             )
         except Exception as exc:
             receipt = ToolReceipt.build(

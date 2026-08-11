@@ -412,3 +412,38 @@ Next executable step:
 1. Teach the R3.2-to-R4c file responsibilities and R4c recovery invariant.
 2. Complete the R4c understanding gate before selecting bounded step/timeout
    controls or the Model Adapter boundary.
+
+## Current milestone — R4d durable timeout evidence
+
+Engineering implemented and locally verified; publication and Lucas
+understanding gate remain:
+
+- Added `ToolTimeoutError(timeout_seconds)` as the typed signal emitted only
+  after a Tool Runner or isolated worker has enforced its own deadline.
+- Added a distinct durable `ToolOutcome.TIMED_OUT` Receipt rather than folding
+  timeout into a generic Tool failure.
+- Added `tool.timed_out`; Reducer replay deterministically moves
+  `TOOL_RUNNING -> FAILED` and preserves the timeout reason.
+- Added a transactional SQLite migration that expands the legacy Receipt
+  outcome constraint while preserving existing Intent/Receipt evidence.
+- Kept deadline enforcement out of the synchronous in-process executor: it
+  observes and persists the Runner's timeout, but cannot safely kill arbitrary
+  Python tool code.
+
+Local evidence:
+
+```text
+R4d targeted tests: 57 passed
+Full suite: 165 passed, 1 skipped
+Ruff: All checks passed!
+Format: 46 Python files already formatted
+Diff check: clean
+Publish: blocked because gh is not installed in the current environment
+```
+
+Next executable step:
+
+1. Complete the R4d timeout ownership and persistence understanding gate.
+2. Install/authenticate GitHub CLI, then commit and push the verified R4d diff.
+3. After publication, implement a bounded step budget at the future Agent Loop
+   boundary or define the Model Adapter contract; do not add an unbounded loop.

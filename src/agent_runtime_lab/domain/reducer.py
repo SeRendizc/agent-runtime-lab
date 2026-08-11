@@ -294,6 +294,22 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             failure_reason=reason,
         )
 
+    if event.event_type is EventType.TOOL_TIMED_OUT:
+        _expect(state, RunStatus.TOOL_RUNNING, event)
+        _expect_active_tool(state, event)
+        reason = _required_text(event, "reason")
+        return replace(
+            state,
+            status=RunStatus.FAILED,
+            active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
+            failure_reason=reason,
+        )
+
     if event.event_type is EventType.VERIFICATION_SUCCEEDED:
         _expect(state, RunStatus.VERIFYING, event)
         return replace(state, status=RunStatus.COMPLETED)

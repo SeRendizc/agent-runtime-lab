@@ -30,6 +30,7 @@ class EventType(StrEnum):
     TOOL_STARTED = "tool.started"
     TOOL_SUCCEEDED = "tool.succeeded"
     TOOL_FAILED = "tool.failed"
+    TOOL_TIMED_OUT = "tool.timed_out"
     VERIFICATION_SUCCEEDED = "verification.succeeded"
     VERIFICATION_FAILED = "verification.failed"
 

@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -163,3 +164,71 @@ def test_conflicting_receipt_is_rejected(
     assert store.load_receipt(intent.effect_id) == original
 
     store.close()
+
+
+def test_legacy_receipt_constraint_is_migrated_without_losing_evidence(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "runtime.db"
+    intent = make_intent()
+    succeeded = ToolReceipt.build(
+        effect_id=intent.effect_id,
+        outcome=ToolOutcome.SUCCEEDED,
+        output={"ok": True},
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE tool_intents (
+                effect_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                arguments_json TEXT NOT NULL,
+                UNIQUE (run_id, tool_call_id)
+            );
+            CREATE TABLE tool_receipts (
+                effect_id TEXT PRIMARY KEY,
+                outcome TEXT NOT NULL CHECK (outcome IN ('succeeded', 'failed')),
+                output_json TEXT NOT NULL,
+                FOREIGN KEY (effect_id) REFERENCES tool_intents (effect_id)
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO tool_intents
+                (effect_id, run_id, tool_call_id, tool_name, arguments_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                intent.effect_id,
+                intent.run_id,
+                intent.tool_call_id,
+                intent.tool_name,
+                intent.arguments_json,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO tool_receipts (effect_id, outcome, output_json) VALUES (?, ?, ?)",
+            (succeeded.effect_id, succeeded.outcome.value, succeeded.output_json),
+        )
+
+    with SQLiteToolEffectStore(database_path) as store:
+        assert store.load_intent(intent.effect_id) == intent
+        assert store.load_receipt(intent.effect_id) == succeeded
+
+        timed_out_intent = ToolIntent.build(
+            run_id="run-2",
+            tool_call_id="tool-call-2",
+            tool_name="append_file",
+        )
+        timed_out = ToolReceipt.build(
+            effect_id=timed_out_intent.effect_id,
+            outcome=ToolOutcome.TIMED_OUT,
+            output={"timeout_seconds": 2.5},
+        )
+        store.save_intent(timed_out_intent)
+        store.save_receipt(timed_out)
+
+        assert store.load_receipt(timed_out.effect_id) == timed_out

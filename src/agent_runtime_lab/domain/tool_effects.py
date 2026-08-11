@@ -15,6 +15,7 @@ from agent_runtime_lab.domain.errors import EventValidationError
 class ToolOutcome(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    TIMED_OUT = "timed_out"
 
 
 class RecoveryDecision(StrEnum):

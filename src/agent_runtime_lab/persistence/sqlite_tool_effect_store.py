@@ -43,7 +43,7 @@ class SQLiteToolEffectStore:
             CREATE TABLE IF NOT EXISTS tool_receipts (
                 effect_id TEXT PRIMARY KEY,
                 outcome TEXT NOT NULL
-                    CHECK (outcome IN ('succeeded', 'failed')),
+                    CHECK (outcome IN ('succeeded', 'failed', 'timed_out')),
                 output_json TEXT NOT NULL,
                 FOREIGN KEY (effect_id)
                     REFERENCES tool_intents (effect_id)
@@ -51,6 +51,47 @@ class SQLiteToolEffectStore:
             """
         )
         self._connection.commit()
+        self._migrate_receipt_outcomes()
+
+    def _migrate_receipt_outcomes(self) -> None:
+        """Upgrade the pre-R4d receipt constraint without losing durable evidence."""
+
+        row = self._connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tool_receipts'"
+        ).fetchone()
+        if row is None or "'timed_out'" in row["sql"]:
+            return
+
+        self._connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            self._connection.execute("ALTER TABLE tool_receipts RENAME TO tool_receipts_legacy")
+            self._connection.execute(
+                """
+                CREATE TABLE tool_receipts (
+                    effect_id TEXT PRIMARY KEY,
+                    outcome TEXT NOT NULL
+                        CHECK (outcome IN ('succeeded', 'failed', 'timed_out')),
+                    output_json TEXT NOT NULL,
+                    FOREIGN KEY (effect_id)
+                        REFERENCES tool_intents (effect_id)
+                )
+                """
+            )
+            self._connection.execute(
+                """
+                INSERT INTO tool_receipts (effect_id, outcome, output_json)
+                SELECT effect_id, outcome, output_json
+                FROM tool_receipts_legacy
+                """
+            )
+            self._connection.execute("DROP TABLE tool_receipts_legacy")
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+        finally:
+            self._connection.execute("PRAGMA foreign_keys = ON")
 
     def save_intent(self, intent: ToolIntent) -> None:
         """Persist an intent or accept an exact redelivery."""
