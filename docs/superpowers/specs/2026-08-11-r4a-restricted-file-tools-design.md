@@ -44,10 +44,13 @@ A new `restricted_file_tools.py` module owns both:
 - `RestrictedFileToolRunner`, which implements the existing `ToolRunner`
   protocol.
 
-Keeping definitions and handlers in one module prevents a caller from silently
-declaring a dangerous handler retry-safe. A factory returns the canonical
-registry for these three tools. Tests assert that the registry metadata and
-runner dispatch table contain the same names and retry policies.
+Keeping definitions and handlers in one module provides one canonical
+composition path and reduces accidental metadata drift. A factory returns the
+canonical registry for these three tools. Tests assert that the registry
+metadata and runner dispatch table contain the same names and retry policies.
+The application composition root remains trusted: R4a does not claim it can
+protect against trusted host code deliberately wiring a different Registry into
+the Executor.
 
 `AuthorizedToolRuntime` and `DurableToolExecutor` retain their current roles:
 
