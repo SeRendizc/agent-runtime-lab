@@ -264,6 +264,7 @@ Evidence:
 
 ```text
 Published code commit: f810ca9
+Concurrent Event Store evidence: 2fdc4f6
 Targeted Runtime + Reducer + Event Store tests: 46 passed
 Full suite: 115 passed
 Ruff: All checks passed!
