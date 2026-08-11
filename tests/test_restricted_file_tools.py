@@ -6,9 +6,13 @@ import pytest
 from agent_runtime_lab.domain.errors import (
     RestrictedToolExecutionError,
     ToolArgumentValidationError,
+    UnsafeToolRetryError,
     WorkspaceExecutionError,
 )
+from agent_runtime_lab.domain.tool_effects import ToolIntent, ToolOutcome
+from agent_runtime_lab.durable_tool_executor import DurableToolExecutor
 from agent_runtime_lab.ownership.authorization import WorkspaceBoundary
+from agent_runtime_lab.persistence.sqlite_tool_effect_store import SQLiteToolEffectStore
 from agent_runtime_lab.restricted_file_tools import (
     RestrictedFileToolRunner,
     make_restricted_file_registry,
@@ -244,3 +248,96 @@ def test_write_failure_is_sanitized_and_cleans_staging_file(
     assert "os_code=13" in str(raised.value)
     assert not tmp_path.joinpath("notes.txt").exists()
     assert not list(tmp_path.glob(".agent-runtime-*.tmp"))
+
+
+def test_incomplete_read_intent_is_safely_retried_with_real_runner(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    workspace.joinpath("notes.txt").write_text("hello", encoding="utf-8")
+    intent = ToolIntent.build(
+        run_id="run-read",
+        tool_call_id="call-read",
+        tool_name="read_file",
+        arguments={"path": "notes.txt"},
+    )
+    database_path = tmp_path / "runtime.db"
+    with SQLiteToolEffectStore(database_path) as initial_store:
+        initial_store.save_intent(intent)
+
+    with SQLiteToolEffectStore(database_path) as recovered_store:
+        executor = DurableToolExecutor(
+            store=recovered_store,
+            runner=RestrictedFileToolRunner(WorkspaceBoundary(workspace)),
+            registry=make_restricted_file_registry(),
+        )
+        receipt = executor.execute(intent=intent)
+
+        assert recovered_store.load_receipt(intent.effect_id) == receipt
+
+    assert receipt.outcome is ToolOutcome.SUCCEEDED
+    assert receipt.output["content"] == "hello"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("write_file", {"path": "notes.txt", "content": "changed"}),
+        ("delete_file", {"path": "notes.txt"}),
+    ],
+)
+def test_incomplete_mutating_intent_fails_closed_without_real_effect(
+    tmp_path: Path,
+    tool_name: str,
+    arguments: dict[str, str],
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "notes.txt"
+    target.write_text("original", encoding="utf-8")
+    intent = ToolIntent.build(
+        run_id=f"run-{tool_name}",
+        tool_call_id=f"call-{tool_name}",
+        tool_name=tool_name,
+        arguments=arguments,
+    )
+    database_path = tmp_path / "runtime.db"
+    with SQLiteToolEffectStore(database_path) as initial_store:
+        initial_store.save_intent(intent)
+
+    with SQLiteToolEffectStore(database_path) as recovered_store:
+        executor = DurableToolExecutor(
+            store=recovered_store,
+            runner=RestrictedFileToolRunner(WorkspaceBoundary(workspace)),
+            registry=make_restricted_file_registry(),
+        )
+        with pytest.raises(UnsafeToolRetryError, match="cannot be retried safely"):
+            executor.execute(intent=intent)
+
+        assert recovered_store.load_receipt(intent.effect_id) is None
+
+    assert target.read_text(encoding="utf-8") == "original"
+
+
+def test_completed_write_receipt_is_returned_without_repeating_effect(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "notes.txt"
+    intent = ToolIntent.build(
+        run_id="run-write",
+        tool_call_id="call-write",
+        tool_name="write_file",
+        arguments={"path": "notes.txt", "content": "first"},
+    )
+
+    with SQLiteToolEffectStore(tmp_path / "runtime.db") as store:
+        executor = DurableToolExecutor(
+            store=store,
+            runner=RestrictedFileToolRunner(WorkspaceBoundary(workspace)),
+            registry=make_restricted_file_registry(),
+        )
+        first_receipt = executor.execute(intent=intent)
+        target.write_text("external-change", encoding="utf-8")
+        second_receipt = executor.execute(intent=intent)
+
+    assert first_receipt == second_receipt
+    assert target.read_text(encoding="utf-8") == "external-change"
