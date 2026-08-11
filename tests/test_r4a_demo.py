@@ -20,8 +20,14 @@ def test_demo_returns_sanitized_real_runtime_evidence() -> None:
         "outside_changed": False,
     }
     assert summary["fail_closed_recovery"]["automatic_retry"] is False
-    assert summary["fail_closed_recovery"]["error_type"] == "UnsafeToolRetryError"
-    assert summary["fail_closed_recovery"]["target_exists"] is False
+    assert summary["fail_closed_recovery"]["write_file"] == {
+        "error_type": "UnsafeToolRetryError",
+        "target_exists": False,
+    }
+    assert summary["fail_closed_recovery"]["delete_file"] == {
+        "error_type": "UnsafeToolRetryError",
+        "target_preserved": True,
+    }
     assert all(item["events"] for item in summary.values() if "events" in item)
     assert "temporary demo content" not in encoded
     assert not any(Path(value).is_absolute() for value in _all_strings(summary))

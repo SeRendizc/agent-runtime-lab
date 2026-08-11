@@ -220,30 +220,46 @@ def run_demo() -> dict[str, Any]:
         events.close()
         effects.close()
 
-        recovery_intent = ToolIntent.build(
-            run_id="demo-recovery",
-            tool_call_id="demo-call",
-            tool_name="write_file",
-            arguments={"path": "unknown.txt", "content": "not retried"},
+        workspace.joinpath("preserve-me.txt").write_text("preserved", encoding="utf-8")
+        recovery_intents = (
+            ToolIntent.build(
+                run_id="demo-write-recovery",
+                tool_call_id="demo-call",
+                tool_name="write_file",
+                arguments={"path": "unknown.txt", "content": "not retried"},
+            ),
+            ToolIntent.build(
+                run_id="demo-delete-recovery",
+                tool_call_id="demo-call",
+                tool_name="delete_file",
+                arguments={"path": "preserve-me.txt"},
+            ),
         )
+        recovery_errors: dict[str, str] = {}
         with SQLiteToolEffectStore(database_path) as recovery_store:
-            recovery_store.save_intent(recovery_intent)
             recovery_executor = DurableToolExecutor(
                 store=recovery_store,
                 runner=RestrictedFileToolRunner(WorkspaceBoundary(workspace)),
                 registry=make_restricted_file_registry(),
             )
-            try:
-                recovery_executor.execute(intent=recovery_intent)
-            except UnsafeToolRetryError as exc:
-                recovery_error = type(exc).__name__
-            else:
-                raise AssertionError("non-idempotent recovery unexpectedly retried")
+            for recovery_intent in recovery_intents:
+                recovery_store.save_intent(recovery_intent)
+                try:
+                    recovery_executor.execute(intent=recovery_intent)
+                except UnsafeToolRetryError as exc:
+                    recovery_errors[recovery_intent.tool_name] = type(exc).__name__
+                else:
+                    raise AssertionError("non-idempotent recovery unexpectedly retried")
         summary["fail_closed_recovery"] = {
-            "tool_name": "write_file",
             "automatic_retry": False,
-            "error_type": recovery_error,
-            "target_exists": workspace.joinpath("unknown.txt").exists(),
+            "write_file": {
+                "error_type": recovery_errors["write_file"],
+                "target_exists": workspace.joinpath("unknown.txt").exists(),
+            },
+            "delete_file": {
+                "error_type": recovery_errors["delete_file"],
+                "target_preserved": workspace.joinpath("preserve-me.txt").exists(),
+            },
         }
 
         return summary
