@@ -41,6 +41,18 @@ class DuplicateToolDefinitionError(RuntimeContractError):
     """A tool name cannot have multiple trusted definitions."""
 
 
+class ToolArgumentValidationError(RuntimeContractError):
+    """A real tool received malformed or unexpected arguments."""
+
+
+class WorkspaceExecutionError(RuntimeContractError):
+    """A real tool target violates the execution-time workspace boundary."""
+
+
+class RestrictedToolExecutionError(RuntimeError):
+    """A restricted tool hit a sanitized expected filesystem failure."""
+
+
 class InvalidTransitionError(RuntimeContractError):
     """An event cannot be applied in the current state."""
 
