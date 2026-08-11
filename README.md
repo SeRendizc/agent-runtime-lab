@@ -11,10 +11,11 @@ duplicating tool effects or bypassing user gates.
 
 The active development branch is `durable-tool-execution-recovery`. The
 deterministic R1 core, durable R2 tool-effect path, R3 ownership and gate path,
-and R4a restricted file-tool path are implemented and published on that branch.
+R4a restricted file-tool path, and R4b verification/Fake Agent loop are
+implemented on that branch.
 R3.3c proposal revision rollover, concurrent duplicate semantics, and its
-understanding correction are complete. R4a engineering is complete; its final
-code-grounded understanding gate remains separate.
+understanding correction are complete. The R4a demonstration now lives under
+`examples/` rather than the reusable Runtime package.
 
 Published R3.3a evidence is `f880cdd` / `6955650`. R3.3b implementation and
 understanding-gate evidence is `c2989b3` plus `90a384e`. R4a implementation
@@ -51,15 +52,26 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
   Intent/Receipt recovery, and Event replay;
 - safe retry for incomplete reads and fail-closed recovery for incomplete
   writes and deletes;
-- 145 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
-  and 40 Python files pass the format check.
+- immutable Receipt expectations and ordered Runtime-owned verification checks;
+- durable `verification.succeeded` / `verification.failed` evidence that alone
+  moves `VERIFYING` to a terminal state;
+- a static Fake Agent proving a real read through Authorization, Receipt,
+  Verification, Event replay, and `COMPLETED` while DENY/Gate cannot self-pass;
+- 159 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
+  and 46 Python files pass the format check.
 
-R3.3 and R4a engineering have been pushed to the development branch. Nothing is
+R3.3, R4a, and R4b engineering are on the development branch. Nothing is
 claimed as merged to `main`. R4a is an in-process restricted file runner for a
 dedicated non-secret temporary workspace. Its path check and I/O are not one
 kernel-atomic operation, so a hostile concurrent process can still create a
 check/use race. It is not a production sandbox, secret-redaction layer, Shell,
 or complete agent loop.
+
+The R4a demonstration is intentionally outside the core package and runs with:
+
+```powershell
+.venv\Scripts\python.exe examples\r4a_restricted_file_demo.py
+```
 
 The intended scope is:
 

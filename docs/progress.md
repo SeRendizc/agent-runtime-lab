@@ -302,7 +302,7 @@ Engineering complete; code-grounded understanding gate remains separate:
   persisted request.
 - Proved incomplete reads are safely retried while incomplete writes and
   deletes raise `UnsafeToolRetryError` without repeating a real effect.
-- Added `python -m agent_runtime_lab.r4a_demo`, which emits only relative paths,
+- Added `examples/r4a_restricted_file_demo.py`, which emits only relative paths,
   Event types, Receipt outcomes, digests, and fail-closed recovery evidence.
 
 Evidence:
@@ -335,10 +335,43 @@ Trust boundary:
 - Process-crash recovery is covered. Machine power loss and directory-metadata
   durability are not.
 
+## Current milestone — R4b verification evidence and Fake Agent
+
+Engineering implemented and verified:
+
+- Moved the R4a runnable demonstration from the reusable package to
+  `examples/r4a_restricted_file_demo.py` without changing its behavior.
+- Added immutable `VerificationExpectation`, `VerificationCheck`, and
+  `VerificationResult` contracts plus a pure `ReceiptVerifier`.
+- Verification checks the durable Receipt outcome, exact relative path, and
+  exact SHA-256 without echoing file content, paths, or digests in messages.
+- Added `AuthorizedToolRuntime.record_verification(...)`, which persists
+  ordered checks through the existing verification Events. The Reducer remains
+  the authority that moves `VERIFYING` to `COMPLETED` or `FAILED`.
+- Added a static `FakeAgent` that submits one immutable request and cannot
+  declare success itself. DENIED and AWAITING_GATE requests raise rather than
+  producing verification evidence.
+- Proved a real temporary file flows through Authorization, restricted read,
+  durable Receipt, verification Event, replay, and `COMPLETED`; a wrong digest
+  deterministically ends in `FAILED`.
+
+Evidence:
+
+```text
+Design: b6c846a
+Plan: 4e9b2e6
+Implementation: 2529cd5
+R4b targeted tests: 14 passed
+Full suite: 159 passed, 1 skipped
+Ruff: All checks passed!
+Format: 46 Python files already formatted
+```
+
 Next executable step:
 
-1. Complete the short R4a understanding gate using the real implementation.
-2. Do not add Shell, subprocess execution, or cloud sandboxing in R4a.
+1. Teach R4a/R4b from the real files and complete the understanding check.
+2. Do not generalize the static Fake Agent into an unbounded loop or real model
+   adapter before the next design is approved.
 
 Still deferred:
 
