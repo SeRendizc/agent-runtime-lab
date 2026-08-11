@@ -242,9 +242,9 @@ Lucas understanding gate — completed 2026-08-10:
 - Located retry exhaustion in Runtime lifecycle policy rather than in the pure
   evaluator.
 
-## Current milestone — R3.3c proposal revision rollover
+## R3.3c — proposal revision rollover
 
-Implementation and verification complete; Lucas understanding gate pending:
+Implementation, verification, and Lucas correction complete:
 
 - Added `gate.revised` as the only event that replaces an active gate proposal.
 - Required the event to name the exact active predecessor digest and revision.
@@ -272,11 +272,73 @@ Format: 35 Python files already formatted
 Remote: published on durable-tool-execution-recovery
 ```
 
+Lucas correction confirmed:
+
+- a new proposal replaces the active proposal identity rather than branching
+  into an independently resolvable state;
+- a revision is newly derived from the persisted request and current policy,
+  not copied from the unsuccessful proposal parameters;
+- concurrent exact redelivery coalesces to one durable event, while conflicting
+  duplicate content fails closed instead of being renamed or auto-promoted.
+
+## Current milestone — R4a restricted file tools
+
+Engineering complete; code-grounded understanding gate remains separate:
+
+- Added canonical trusted metadata and one in-process runner for exactly
+  `read_file`, `write_file`, and `delete_file`.
+- Enforced exact string arguments without coercion and a trusted 1 MiB default
+  UTF-8 byte limit.
+- Revalidated original relative paths immediately before I/O, rejected every
+  `..` component, absolute/drive paths, directories, non-regular files,
+  missing write parents, symbolic links, and Windows reparse points.
+- Returned only relative paths and structured byte/digest evidence; expected OS
+  failures retain an errno/winerror code without the absolute workspace root or
+  full host error text.
+- Implemented same-directory exclusive staging, flush, `fsync`, and
+  `os.replace` for complete-file writes, with ordinary-failure cleanup.
+- Proved real temporary-workspace effects through AUTO read, PAIR write,
+  USER_GATE delete, escape denial before Intent, and restart from the exact
+  persisted request.
+- Proved incomplete reads are safely retried while incomplete writes and
+  deletes raise `UnsafeToolRetryError` without repeating a real effect.
+- Added `python -m agent_runtime_lab.r4a_demo`, which emits only relative paths,
+  Event types, Receipt outcomes, digests, and fail-closed recovery evidence.
+
+Evidence:
+
+```text
+Plan commit: fb9fca1
+Runner implementation: 13e29bf
+Recovery tests: 157c46f
+Authorization/Gate integration: a44d0db
+Demo: 6ac67b7
+Windows reparse evidence: 18a1425
+R4a targeted tests: 30 passed, 1 skipped
+Full suite: 145 passed, 1 skipped
+Ruff: All checks passed!
+Format: 40 Python files already formatted
+Compileall: passed
+Demo: exited 0 with sanitized JSON
+```
+
+Trust boundary:
+
+- This is a real in-process file runner, not a process, Docker, cloud, or
+  kernel-enforced sandbox.
+- Authorization, execution-time path validation, and sandbox isolation are
+  different controls; R4a implements the first two only.
+- Path validation and I/O retain a documented check/use race. The demo and
+  integration tests therefore use dedicated non-secret temporary workspaces.
+- A successful read Receipt intentionally contains bounded file content; R4a
+  does not claim secret redaction.
+- Process-crash recovery is covered. Machine power loss and directory-metadata
+  durability are not.
+
 Next executable step:
 
-1. Explain revision identity, predecessor checks, replay, and stale-reference
-   rejection to Lucas.
-2. Complete the R3.3c understanding gate before the next Runtime batch.
+1. Complete the short R4a understanding gate using the real implementation.
+2. Do not add Shell, subprocess execution, or cloud sandboxing in R4a.
 
 Still deferred:
 

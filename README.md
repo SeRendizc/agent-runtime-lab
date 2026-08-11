@@ -10,15 +10,16 @@ duplicating tool effects or bypassing user gates.
 ## Current status
 
 The active development branch is `durable-tool-execution-recovery`. The
-deterministic R1 core, durable R2 tool-effect path, R3.1 ownership step
-classification, the R3.2 authorization contract, and the R3.3a durable gate
-control path are implemented and published on that branch. R3.3b USER_GATE
-attempt persistence, concrete answer evaluation, and its understanding gate are
-complete and published. R3.3c proposal revision rollover is implemented and
-verified; its understanding gate remains before the milestone is marked complete.
+deterministic R1 core, durable R2 tool-effect path, R3 ownership and gate path,
+and R4a restricted file-tool path are implemented and published on that branch.
+R3.3c proposal revision rollover, concurrent duplicate semantics, and its
+understanding correction are complete. R4a engineering is complete; its final
+code-grounded understanding gate remains separate.
 
 Published R3.3a evidence is `f880cdd` / `6955650`. R3.3b implementation and
-understanding-gate evidence is `c2989b3` plus `90a384e`:
+understanding-gate evidence is `c2989b3` plus `90a384e`. R4a implementation
+evidence begins at `13e29bf`, with recovery, integration, demo, and Windows
+reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
 
 - immutable events, run state, lifecycle reduction, and ordered replay;
 - SQLite tool intents and receipts with crash-window recovery;
@@ -41,13 +42,24 @@ understanding-gate evidence is `c2989b3` plus `90a384e`:
   bounded retry exhaustion, and post-pass crash recovery;
 - proposal revision rollover, policy-mode upgrades, and stale-reference
   invalidation across restart;
-- 115 tests pass, Ruff passes, and 35 Python files pass the format check.
+- canonical UTF-8 `read_file`, `write_file`, and `delete_file` definitions and
+  one matching in-process runner;
+- exact arguments, a 1 MiB default limit, execution-time path revalidation,
+  symlink/reparse rejection, regular-file checks, and sanitized OS failures;
+- same-directory staged writes with flush, `fsync`, and atomic `os.replace`;
+- real temporary-workspace effects through AUTO, PAIR, USER_GATE, durable
+  Intent/Receipt recovery, and Event replay;
+- safe retry for incomplete reads and fail-closed recovery for incomplete
+  writes and deletes;
+- 145 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
+  and 40 Python files pass the format check.
 
-R3.3a and R3.3b have been pushed to the development branch, and Lucas completed
-the R3.3b understanding gate. R3.3c implements proposal revision rollover and
-stale-reference invalidation; its code is verified and awaits the next
-understanding gate. Nothing is claimed as merged to `main`. The runtime is still
-a validation spike, not a production sandbox or a complete agent loop.
+R3.3 and R4a engineering have been pushed to the development branch. Nothing is
+claimed as merged to `main`. R4a is an in-process restricted file runner for a
+dedicated non-secret temporary workspace. Its path check and I/O are not one
+kernel-atomic operation, so a hostile concurrent process can still create a
+check/use race. It is not a production sandbox, secret-redaction layer, Shell,
+or complete agent loop.
 
 The intended scope is:
 
@@ -86,6 +98,11 @@ Real ToolRequest
 also not a gate approval: `ESCALATE` means the Runtime must persist and wait.
 R3.3 now enforces that wait in the reducer and durable execution path. A
 USER_GATE cannot be bypassed with the PAIR approval API.
+
+After authorization or an exact Gate approval, R4a persists the original
+request as a Tool Intent and invokes the restricted runner. The runner validates
+the original arguments and workspace path again immediately before real I/O;
+it never treats an authorization decision as permanent filesystem proof.
 
 Gate references bind an approval to the exact proposal, but do not authenticate
 the human actor. Production identity and session authentication belong at the
