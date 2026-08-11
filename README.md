@@ -13,12 +13,12 @@ The active development branch is `durable-tool-execution-recovery`. The
 deterministic R1 core, durable R2 tool-effect path, R3.1 ownership step
 classification, the R3.2 authorization contract, and the R3.3a durable gate
 control path are implemented and published on that branch. R3.3b USER_GATE
-attempt persistence and concrete answer evaluation are also implemented,
-verified, and published; the understanding gate remains before the milestone is
-marked complete.
+attempt persistence, concrete answer evaluation, and its understanding gate are
+complete and published. R3.3c proposal revision rollover is implemented and
+verified; its understanding gate remains before the milestone is marked complete.
 
-Published R3.3a evidence is `f880cdd` / `6955650`. R3.3b implementation evidence
-is `c2989b3` plus `90a384e`:
+Published R3.3a evidence is `f880cdd` / `6955650`. R3.3b implementation and
+understanding-gate evidence is `c2989b3` plus `90a384e`:
 
 - immutable events, run state, lifecycle reduction, and ordered replay;
 - SQLite tool intents and receipts with crash-window recovery;
