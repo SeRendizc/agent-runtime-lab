@@ -533,8 +533,8 @@ Lucas understanding gate — completed 2026-08-12:
 
 ## Current milestone — R4g durable model-step budget
 
-Engineering implemented and locally verified; publication and Lucas
-understanding gate remain:
+Engineering implemented, verified, and published; Lucas understanding gate
+remains:
 
 - Added an optional positive `max_steps` creation contract. New bounded runs
   persist it in `run.created`; legacy creation Events without the field keep
@@ -551,9 +551,10 @@ understanding gate remain:
   one allowed turn remains consumed, the second request fails closed, and only
   one `tool.requested` Event exists.
 
-Local evidence:
+Evidence:
 
 ```text
+Implementation: 9137bd1
 R4g targeted tests: 53 passed
 Full suite: 189 passed, 1 skipped
 Ruff: All checks passed!
@@ -562,8 +563,7 @@ Format: 48 Python files already formatted
 
 Next executable step:
 
-1. Publish R4g atomically and synchronize the active project facts.
-2. Teach the durable budget contract and complete the R4g understanding gate.
-3. Define a Runtime-owned completion proposal/evidence/Event contract so a
+1. Teach the durable budget contract and complete the R4g understanding gate.
+2. Define a Runtime-owned completion proposal/evidence/Event contract so a
    `FinalAnswerAction` can be validated without directly controlling terminal
    State.

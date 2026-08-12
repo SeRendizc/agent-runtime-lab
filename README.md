@@ -76,9 +76,8 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
 - 189 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
   and 48 package/test Python files pass the format check.
 
-R3.3 and R4a-R4f engineering are published on the development branch; R4g is
-implemented and verified in the current change. Nothing is claimed as merged
-to `main`. R4a is an in-process restricted file runner for a dedicated
+R3.3 and R4a-R4g engineering are published on the development branch. Nothing
+is claimed as merged to `main`. R4a is an in-process restricted file runner for a dedicated
 non-secret temporary workspace. Its path check and I/O are not one
 kernel-atomic operation, so a hostile concurrent process can still create a
 check/use race. It is not a
