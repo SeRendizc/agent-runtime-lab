@@ -12,8 +12,13 @@ from agent_runtime_lab.domain.errors import InvalidTransitionError
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
 from agent_runtime_lab.domain.state import RunStatus
 from agent_runtime_lab.durable_tool_executor import DurableToolExecutor
-from agent_runtime_lab.fake_agent import FakeAgent, FakeAgentCheckpoint
+from agent_runtime_lab.fake_agent import (
+    FakeAgent,
+    FakeAgentCheckpoint,
+    ModelDrivenFakeAgent,
+)
 from agent_runtime_lab.model_adapter import (
+    FinalAnswerAction,
     ModelInput,
     StaticModelAdapter,
     ToolCallAction,
@@ -200,6 +205,111 @@ def test_static_model_action_flows_through_runtime_owned_request_identity(
     assert requested.event_type is EventType.TOOL_REQUESTED
     assert requested.payload["step_id"] == "step-1"
     assert requested.payload["tool_call_id"] == "call-1"
+    events.close()
+    effects.close()
+
+
+def test_model_driven_agent_advances_two_durable_turns_across_restart(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    first_content = "first durable turn"
+    second_content = "second durable turn"
+    workspace.joinpath("first.txt").write_text(first_content, encoding="utf-8")
+    workspace.joinpath("second.txt").write_text(second_content, encoding="utf-8")
+    adapter = StaticModelAdapter(
+        actions=(
+            ToolCallAction.build(
+                tool_call_id="call-1",
+                tool_name="read_file",
+                arguments={"path": "first.txt"},
+            ),
+            ToolCallAction.build(
+                tool_call_id="call-2",
+                tool_name="read_file",
+                arguments={"path": "second.txt"},
+            ),
+        )
+    )
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_run(events, "run-two-turns")
+    first_agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=adapter,
+        run_id="run-two-turns",
+    )
+
+    first = first_agent.run_tool_turn(
+        VerificationExpectation(
+            path="first.txt",
+            sha256=hashlib.sha256(first_content.encode("utf-8")).hexdigest(),
+        )
+    )
+
+    assert first.context.turn_index == 0
+    assert first.context.step_id == "step-1"
+    assert first.state.status is RunStatus.READY
+    assert first.state.turn_index == 1
+    events.close()
+    effects.close()
+
+    recovered_runtime, recovered_events, recovered_effects = make_runtime(tmp_path, workspace)
+    second_agent = ModelDrivenFakeAgent(
+        runtime=recovered_runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(actions=adapter.actions),
+        run_id="run-two-turns",
+    )
+
+    second = second_agent.run_tool_turn(
+        VerificationExpectation(
+            path="second.txt",
+            sha256=hashlib.sha256(second_content.encode("utf-8")).hexdigest(),
+        )
+    )
+
+    assert second.context.turn_index == 1
+    assert second.context.step_id == "step-2"
+    assert second.context.observation["verification"]["summary"] == (
+        "all verification checks passed"
+    )
+    assert second.action.tool_call_id == "call-2"
+    assert second.state.status is RunStatus.READY
+    assert second.state.turn_index == 2
+    requested = [
+        item
+        for item in recovered_events.load("run-two-turns")
+        if item.event_type is EventType.TOOL_REQUESTED
+    ]
+    assert [item.payload["step_id"] for item in requested] == ["step-1", "step-2"]
+    assert [item.payload["tool_call_id"] for item in requested] == ["call-1", "call-2"]
+    recovered_events.close()
+    recovered_effects.close()
+
+
+def test_model_driven_tool_turn_rejects_final_answer_without_completion_contract(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_run(events, "run-final-answer")
+    agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(
+            actions=(FinalAnswerAction(answer="unverified completion claim"),)
+        ),
+        run_id="run-final-answer",
+    )
+
+    with pytest.raises(InvalidTransitionError, match="tool-call action"):
+        agent.run_tool_turn(VerificationExpectation(path="notes.txt", sha256="0" * 64))
+
+    assert runtime.load_state("run-final-answer").status is RunStatus.READY
+    assert len(events.load("run-final-answer")) == 2
     events.close()
     effects.close()
 

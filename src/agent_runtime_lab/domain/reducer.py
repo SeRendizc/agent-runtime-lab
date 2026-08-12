@@ -66,6 +66,7 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
         return replace(
             state,
             status=RunStatus.CANCELLED,
+            active_step_id=None,
             active_tool_call_id=None,
             active_gate_proposal_digest=None,
             active_gate_revision=None,
@@ -93,9 +94,15 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
 
     if event.event_type is EventType.TOOL_REQUESTED:
         _expect(state, RunStatus.READY, event)
+        step_id = event.payload.get("step_id")
+        if step_id is not None and (not isinstance(step_id, str) or not step_id):
+            raise InvalidTransitionError(
+                "tool.requested payload.step_id must be a non-empty string"
+            )
         return replace(
             state,
             status=RunStatus.TOOL_PENDING,
+            active_step_id=step_id,
             active_tool_call_id=_required_text(event, "tool_call_id"),
         )
 
@@ -215,6 +222,7 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             return replace(
                 state,
                 status=RunStatus.FAILED,
+                active_step_id=None,
                 active_tool_call_id=None,
                 active_gate_proposal_digest=None,
                 active_gate_revision=None,
@@ -234,6 +242,7 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
         return replace(
             state,
             status=RunStatus.FAILED,
+            active_step_id=None,
             active_tool_call_id=None,
             active_gate_proposal_digest=None,
             active_gate_revision=None,
@@ -250,6 +259,7 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
         return replace(
             state,
             status=RunStatus.FAILED,
+            active_step_id=None,
             active_tool_call_id=None,
             active_gate_proposal_digest=None,
             active_gate_revision=None,
@@ -285,6 +295,7 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
         return replace(
             state,
             status=RunStatus.FAILED,
+            active_step_id=None,
             active_tool_call_id=None,
             active_gate_proposal_digest=None,
             active_gate_revision=None,
@@ -301,6 +312,7 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
         return replace(
             state,
             status=RunStatus.FAILED,
+            active_step_id=None,
             active_tool_call_id=None,
             active_gate_proposal_digest=None,
             active_gate_revision=None,
@@ -312,13 +324,31 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
 
     if event.event_type is EventType.VERIFICATION_SUCCEEDED:
         _expect(state, RunStatus.VERIFYING, event)
-        return replace(state, status=RunStatus.COMPLETED)
+        scope = event.payload.get("scope", "run")
+        if scope == "run":
+            return replace(
+                state,
+                status=RunStatus.COMPLETED,
+                active_step_id=None,
+            )
+        if scope == "step":
+            step_id = _required_text(event, "step_id")
+            if state.active_step_id is None or step_id != state.active_step_id:
+                raise InvalidTransitionError("verification.succeeded does not match active step")
+            return replace(
+                state,
+                status=RunStatus.READY,
+                turn_index=state.turn_index + 1,
+                active_step_id=None,
+            )
+        raise InvalidTransitionError("verification.succeeded payload.scope must be run or step")
 
     if event.event_type is EventType.VERIFICATION_FAILED:
         _expect(state, RunStatus.VERIFYING, event)
         return replace(
             state,
             status=RunStatus.FAILED,
+            active_step_id=None,
             failure_reason=_required_text(event, "reason"),
         )
 

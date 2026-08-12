@@ -64,6 +64,53 @@ def test_full_authorized_tool_lifecycle_completes() -> None:
     assert len(state.applied_event_fingerprints) == 7
 
 
+def test_step_scoped_verification_returns_run_to_ready_and_advances_turn() -> None:
+    state = apply(
+        ready_state(),
+        event(
+            2,
+            EventType.TOOL_REQUESTED,
+            payload={"step_id": "step-1", "tool_call_id": "tool-1"},
+        ),
+        event(3, EventType.TOOL_AUTHORIZED, payload={"tool_call_id": "tool-1"}),
+        event(4, EventType.TOOL_STARTED, payload={"tool_call_id": "tool-1"}),
+        event(5, EventType.TOOL_SUCCEEDED, payload={"tool_call_id": "tool-1"}),
+        event(
+            6,
+            EventType.VERIFICATION_SUCCEEDED,
+            payload={"scope": "step", "step_id": "step-1"},
+        ),
+    )
+
+    assert state.status is RunStatus.READY
+    assert state.turn_index == 1
+    assert state.active_step_id is None
+
+
+def test_step_scoped_verification_must_match_active_step() -> None:
+    state = apply(
+        ready_state(),
+        event(
+            2,
+            EventType.TOOL_REQUESTED,
+            payload={"step_id": "step-1", "tool_call_id": "tool-1"},
+        ),
+        event(3, EventType.TOOL_AUTHORIZED, payload={"tool_call_id": "tool-1"}),
+        event(4, EventType.TOOL_STARTED, payload={"tool_call_id": "tool-1"}),
+        event(5, EventType.TOOL_SUCCEEDED, payload={"tool_call_id": "tool-1"}),
+    )
+
+    with pytest.raises(InvalidTransitionError, match="active step"):
+        reduce(
+            state,
+            event(
+                6,
+                EventType.VERIFICATION_SUCCEEDED,
+                payload={"scope": "step", "step_id": "step-2"},
+            ),
+        )
+
+
 def test_exact_duplicate_delivery_is_idempotent() -> None:
     state = ready_state()
     requested = event(

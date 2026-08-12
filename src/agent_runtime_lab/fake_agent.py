@@ -14,6 +14,14 @@ from agent_runtime_lab.authorized_tool_runtime import (
 from agent_runtime_lab.domain.errors import InvalidTransitionError
 from agent_runtime_lab.domain.state import RunState, RunStatus
 from agent_runtime_lab.domain.tool_effects import ToolReceipt
+from agent_runtime_lab.model_adapter import (
+    ModelAction,
+    ModelAdapter,
+    ModelInput,
+    ToolCallAction,
+    request_model_action,
+    tool_request_from_action,
+)
 from agent_runtime_lab.ownership.authorization import ToolRequest
 from agent_runtime_lab.verification import (
     ReceiptVerifier,
@@ -36,6 +44,17 @@ class FakeAgentVerificationRecoveryResult:
     """Evidence returned after resuming verification without rerunning a tool."""
 
     receipt: ToolReceipt
+    verification: VerificationResult
+    state: RunState
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDrivenToolTurnResult:
+    """Evidence for one verified, non-terminal model-proposed tool turn."""
+
+    context: ModelInput
+    action: ToolCallAction
+    tool_result: RuntimeToolResult
     verification: VerificationResult
     state: RunState
 
@@ -102,6 +121,51 @@ class FakeAgent:
         state = self._runtime.record_verification(self._request.run_id, verification)
         return FakeAgentVerificationRecoveryResult(
             receipt=receipt,
+            verification=verification,
+            state=state,
+        )
+
+
+class ModelDrivenFakeAgent:
+    """Execute one durable tool turn selected by an untrusted Model Adapter."""
+
+    def __init__(
+        self,
+        *,
+        runtime: AuthorizedToolRuntime,
+        verifier: ReceiptVerifier,
+        adapter: ModelAdapter,
+        run_id: str,
+    ) -> None:
+        self._runtime = runtime
+        self._verifier = verifier
+        self._adapter = adapter
+        self._run_id = run_id
+
+    def run_tool_turn(
+        self,
+        expectation: VerificationExpectation,
+    ) -> ModelDrivenToolTurnResult:
+        """Run and verify exactly one tool Action, then return to READY."""
+
+        context = self._runtime.build_model_input(self._run_id)
+        proposed: ModelAction = request_model_action(self._adapter, context)
+        if not isinstance(proposed, ToolCallAction):
+            raise InvalidTransitionError("model-driven tool turn requires a tool-call action")
+        request = tool_request_from_action(context, proposed)
+        tool_result = self._runtime.submit(request)
+        if (
+            tool_result.outcome is not RuntimeToolOutcome.EXECUTED
+            or tool_result.receipt is None
+            or tool_result.state.status is not RunStatus.VERIFYING
+        ):
+            raise InvalidTransitionError("model-driven tool turn requires an executed tool receipt")
+        verification = self._verifier.verify(tool_result.receipt, expectation)
+        state = self._runtime.record_step_verification(self._run_id, verification)
+        return ModelDrivenToolTurnResult(
+            context=context,
+            action=proposed,
+            tool_result=tool_result,
             verification=verification,
             state=state,
         )

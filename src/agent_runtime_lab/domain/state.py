@@ -31,6 +31,8 @@ class RunState:
     run_id: str
     status: RunStatus = RunStatus.NEW
     next_sequence: int = 0
+    turn_index: int = 0
+    active_step_id: str | None = None
     active_tool_call_id: str | None = None
     active_gate_proposal_digest: str | None = None
     active_gate_revision: int | None = None
@@ -45,6 +47,8 @@ class RunState:
             raise EventValidationError("run_id must not be empty")
         if self.next_sequence < 0:
             raise EventValidationError("next_sequence must be non-negative")
+        if self.turn_index < 0:
+            raise EventValidationError("turn_index must be non-negative")
 
     @classmethod
     def initial(cls, run_id: str) -> RunState:

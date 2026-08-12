@@ -452,10 +452,9 @@ Lucas understanding gate — completed 2026-08-11:
 - Explained why the SQLite migration must preserve existing Receipts as durable
   recovery evidence.
 
-## Current milestone — R4e static Model Adapter / Action boundary
+## R4e static Model Adapter / Action boundary
 
-Engineering implemented and locally verified; publication and Lucas
-understanding gate remain:
+Engineering, publication, and Lucas understanding gate completed:
 
 - Added immutable canonical `ModelInput` containing Runtime-owned run, step,
   turn, state-status, and trusted observation fields.
@@ -471,9 +470,10 @@ understanding gate remain:
 - Proved a static Tool Action flows through the existing real restricted-file,
   authorization, durable Receipt, verification, and terminal-state path.
 
-Local evidence:
+Evidence:
 
 ```text
+Implementation: 08fc8fd
 R4e targeted tests: 18 passed
 Full suite: 177 passed, 1 skipped
 Ruff: All checks passed!
@@ -481,9 +481,50 @@ Format: 46 package/test Python files already formatted
 Diff check: clean
 ```
 
+Lucas understanding gate — completed 2026-08-12:
+
+- Explained that model-proposed Tool Actions still require Runtime-owned
+  identity, authorization, gates, durable execution, and verification.
+- Explained that Runtime-supplied `turn_index` makes static Action selection
+  reproducible after restart instead of depending on a lost in-memory cursor.
+- Explained that `FinalAnswerAction` is not completion because trusted evidence,
+  a completion Event, and Reducer-owned terminal transition are absent.
+
+## Current milestone — R4f durable verified tool turns
+
+Engineering implemented and locally verified; publication and Lucas
+understanding gate remain:
+
+- Added replayed `turn_index` and `active_step_id` to immutable `RunState`.
+- Preserved backward compatibility: legacy `verification.succeeded` Events
+  without `scope` still complete their historical single-step runs.
+- Added step-scoped verification bound to the active `step_id`; successful
+  verification performs `VERIFYING -> READY`, advances `turn_index`, and clears
+  the active step. Failed verification remains terminal and never advances.
+- Added Runtime-owned `build_model_input(...)`, deriving `step-N` and
+  `turn_index` from replayed State rather than caller or model input.
+- Rebuilt the next trusted observation from the previous persisted verification
+  summary and checks, without persisting raw file content in Run State.
+- Added `ModelDrivenFakeAgent.run_tool_turn(...)` for exactly one verified,
+  non-terminal model-proposed Tool Action.
+- Proved two tool turns across SQLite close/reopen and Runtime/Adapter rebuild:
+  restart selects `call-2 / step-2`, not the first Action again.
+- Proved `FinalAnswerAction` remains fail-closed and produces no Runtime Event
+  without a future completion contract.
+
+Local evidence:
+
+```text
+R4f targeted tests: 44 passed
+Full suite: 181 passed, 1 skipped
+Ruff: All checks passed!
+Format: 48 Python files already formatted
+Diff check: clean
+```
+
 Next executable step:
 
-1. Publish R4e as one atomic commit and synchronize the active project facts.
-2. Teach the Action trust boundary and complete the R4e understanding gate.
-3. Design durable turn/step Events and a bounded multi-step loop before adding
-   Runtime-owned maximum-step exhaustion.
+1. Publish R4f as one atomic commit and synchronize the active project facts.
+2. Teach durable turn replay and complete the R4f understanding gate.
+3. Add a Runtime-owned persisted maximum-step budget whose exhaustion is an
+   explicit fail-closed Event and terminal state.

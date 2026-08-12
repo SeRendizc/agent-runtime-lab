@@ -18,6 +18,7 @@ from agent_runtime_lab.domain.replay import replay
 from agent_runtime_lab.domain.state import RunState, RunStatus
 from agent_runtime_lab.domain.tool_effects import ToolIntent, ToolOutcome, ToolReceipt
 from agent_runtime_lab.durable_tool_executor import DurableToolExecutor
+from agent_runtime_lab.model_adapter import ModelInput
 from agent_runtime_lab.ownership.authorization import (
     AuthorizationContext,
     AuthorizationDecision,
@@ -365,6 +366,20 @@ class AuthorizedToolRuntime:
 
         return replay(run_id, self._event_store.load(run_id))
 
+    def build_model_input(self, run_id: str) -> ModelInput:
+        """Build the next deterministic Model input from replayed Runtime facts."""
+
+        state = self.load_state(run_id)
+        if state.status is not RunStatus.READY:
+            raise InvalidTransitionError(f"model input requires ready, got {state.status.value}")
+        return ModelInput.build(
+            run_id=run_id,
+            step_id=f"step-{state.turn_index + 1}",
+            turn_index=state.turn_index,
+            state_status=state.status,
+            observation=self._load_step_observation(run_id),
+        )
+
     def record_verification(
         self,
         run_id: str,
@@ -389,6 +404,35 @@ class AuthorizedToolRuntime:
         else:
             event_type = EventType.VERIFICATION_SUCCEEDED
         return self._append(run_id, event_type, payload)
+
+    def record_step_verification(
+        self,
+        run_id: str,
+        result: VerificationResult,
+    ) -> RunState:
+        """Persist one trusted tool-step result without claiming the run is complete."""
+
+        state = self.load_state(run_id)
+        if state.status is not RunStatus.VERIFYING or state.active_step_id is None:
+            raise InvalidTransitionError(
+                "step verification requires a verifying run with an active step"
+            )
+        if result.outcome is VerificationOutcome.FAILED:
+            return self.record_verification(run_id, result)
+        payload: dict[str, Any] = {
+            "checks": [
+                {
+                    "name": check.name,
+                    "passed": check.passed,
+                    "message": check.message,
+                }
+                for check in result.checks
+            ],
+            "scope": "step",
+            "step_id": state.active_step_id,
+            "summary": result.summary,
+        }
+        return self._append(run_id, EventType.VERIFICATION_SUCCEEDED, payload)
 
     def load_verification_receipt(self, run_id: str) -> ToolReceipt:
         """Recover durable successful evidence for a run awaiting verification."""
@@ -518,6 +562,20 @@ class AuthorizedToolRuntime:
                 arguments_json=self._payload_text(event.payload, "arguments_json"),
             )
         raise GateReferenceMismatchError("active gate has no matching persisted tool request")
+
+    def _load_step_observation(self, run_id: str) -> dict[str, Any]:
+        for event in reversed(self._event_store.load(run_id)):
+            if event.event_type is not EventType.VERIFICATION_SUCCEEDED:
+                continue
+            if event.payload.get("scope") != "step":
+                continue
+            return {
+                "verification": {
+                    "checks": event.payload.get("checks", []),
+                    "summary": event.payload.get("summary", ""),
+                }
+            }
+        return {}
 
     def _load_active_proposal(
         self,

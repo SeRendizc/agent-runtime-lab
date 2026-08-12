@@ -12,8 +12,9 @@ duplicating tool effects or bypassing user gates.
 The active development branch is `durable-tool-execution-recovery`. The
 deterministic R1 core, durable R2 tool-effect path, R3 ownership and gate path,
 R4a restricted file-tool path, R4b verification/Fake Agent loop, R4c
-verification crash recovery, R4d timeout evidence, and the local R4e static
-Model Adapter / Action boundary are implemented on that branch.
+verification crash recovery, R4d timeout evidence, R4e static Model Adapter /
+Action boundary, and the local R4f durable multi-turn path are implemented on
+that branch.
 R3.3c proposal revision rollover, concurrent duplicate semantics, and its
 understanding correction are complete. The R4a demonstration now lives under
 `examples/` rather than the reusable Runtime package.
@@ -66,10 +67,13 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
 - immutable Runtime-owned `ModelInput`, untrusted `ToolCallAction` and
   `FinalAnswerAction`, deterministic `StaticModelAdapter`, and trusted
   Action-to-`ToolRequest` compilation;
-- 177 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
-  and 46 package/test Python files pass the format check.
+- replayed `turn_index` and active step identity, step-scoped verification that
+  returns a run to `READY`, and a two-turn static Agent that resumes after a
+  SQLite/Runtime restart without repeating the first Action;
+- 181 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
+  and 48 package/test Python files pass the format check.
 
-R3.3 and R4a-R4d engineering are published on the development branch; R4e is
+R3.3 and R4a-R4e engineering are published on the development branch; R4f is
 currently a verified local change. Nothing is claimed as merged to `main`. R4a
 is an in-process restricted file runner for a dedicated non-secret temporary
 workspace. Its path check and I/O are not one kernel-atomic operation, so a
@@ -152,6 +156,14 @@ Action in return. A Tool Action does not carry trusted run or step identity;
 the Runtime adds those fields when compiling the existing `ToolRequest`. A
 Final Answer remains an untrusted proposal and has no API that directly emits
 `verification.succeeded` or changes State to `COMPLETED`.
+
+R4f distinguishes legacy run-scoped verification from new step-scoped
+verification. Legacy Events without a scope still replay to `COMPLETED`.
+Step-scoped success binds to the active `step_id`, advances the durable
+`turn_index`, and returns to `READY`. The next `ModelInput` is rebuilt from
+replayed State plus the previous persisted verification summary. It never
+depends on an Adapter-owned cursor. Final answers remain outside this loop
+until a trusted completion contract exists.
 
 ## Learning workflow
 
