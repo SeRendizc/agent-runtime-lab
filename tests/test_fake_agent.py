@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from agent_runtime_lab.authorized_tool_runtime import AuthorizedToolRuntime
-from agent_runtime_lab.domain.errors import InvalidTransitionError
+from agent_runtime_lab.domain.errors import InvalidTransitionError, StepBudgetExhaustedError
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
 from agent_runtime_lab.domain.state import RunStatus
 from agent_runtime_lab.durable_tool_executor import DurableToolExecutor
@@ -19,6 +19,7 @@ from agent_runtime_lab.fake_agent import (
 )
 from agent_runtime_lab.model_adapter import (
     FinalAnswerAction,
+    ModelAction,
     ModelInput,
     StaticModelAdapter,
     ToolCallAction,
@@ -109,6 +110,33 @@ def initialize_run(events: SQLiteEventStore, run_id: str) -> None:
                 occurred_at=NOW,
             )
         )
+
+
+def initialize_budgeted_run(
+    events: SQLiteEventStore,
+    run_id: str,
+    *,
+    max_steps: int,
+) -> None:
+    events.append(
+        ExecutionEvent.build(
+            event_id=f"{run_id}:0:{EventType.RUN_CREATED.value}",
+            run_id=run_id,
+            sequence=0,
+            event_type=EventType.RUN_CREATED,
+            occurred_at=NOW,
+            payload={"max_steps": max_steps},
+        )
+    )
+    events.append(
+        ExecutionEvent.build(
+            event_id=f"{run_id}:1:{EventType.RUN_STARTED.value}",
+            run_id=run_id,
+            sequence=1,
+            event_type=EventType.RUN_STARTED,
+            occurred_at=NOW,
+        )
+    )
 
 
 def request(
@@ -285,6 +313,70 @@ def test_model_driven_agent_advances_two_durable_turns_across_restart(
     ]
     assert [item.payload["step_id"] for item in requested] == ["step-1", "step-2"]
     assert [item.payload["tool_call_id"] for item in requested] == ["call-1", "call-2"]
+    recovered_events.close()
+    recovered_effects.close()
+
+
+def test_model_step_budget_survives_restart_and_blocks_adapter_and_tool(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    content = "one allowed model turn"
+    workspace.joinpath("notes.txt").write_text(content, encoding="utf-8")
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-budget", max_steps=1)
+    first_agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(
+            actions=(
+                ToolCallAction.build(
+                    tool_call_id="call-1",
+                    tool_name="read_file",
+                    arguments={"path": "notes.txt"},
+                ),
+            )
+        ),
+        run_id="run-budget",
+    )
+
+    first = first_agent.run_tool_turn(
+        VerificationExpectation(
+            path="notes.txt",
+            sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        )
+    )
+
+    assert first.state.status is RunStatus.READY
+    assert first.state.turn_index == 1
+    assert first.state.max_steps == 1
+    events.close()
+    effects.close()
+
+    class ForbiddenAdapter:
+        def next_action(self, context: ModelInput) -> ModelAction:
+            raise AssertionError("adapter must not be called after budget exhaustion")
+
+    recovered_runtime, recovered_events, recovered_effects = make_runtime(tmp_path, workspace)
+    recovered_agent = ModelDrivenFakeAgent(
+        runtime=recovered_runtime,
+        verifier=ReceiptVerifier(),
+        adapter=ForbiddenAdapter(),
+        run_id="run-budget",
+    )
+
+    with pytest.raises(StepBudgetExhaustedError, match="1/1"):
+        recovered_agent.run_tool_turn(VerificationExpectation(path="notes.txt", sha256="0" * 64))
+
+    recovered = recovered_runtime.load_state("run-budget")
+    persisted = recovered_events.load("run-budget")
+    assert recovered.status is RunStatus.FAILED
+    assert recovered.turn_index == 1
+    assert recovered.max_steps == 1
+    assert persisted[-1].event_type is EventType.RUN_STEP_BUDGET_EXHAUSTED
+    assert persisted[-1].payload == {"completed_steps": 1, "max_steps": 1}
+    assert sum(item.event_type is EventType.TOOL_REQUESTED for item in persisted) == 1
     recovered_events.close()
     recovered_effects.close()
 

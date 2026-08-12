@@ -12,6 +12,7 @@ from agent_runtime_lab.domain.errors import (
     GateReferenceMismatchError,
     InvalidTransitionError,
     MissingVerificationEvidenceError,
+    StepBudgetExhaustedError,
 )
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
 from agent_runtime_lab.domain.replay import replay
@@ -372,6 +373,16 @@ class AuthorizedToolRuntime:
         state = self.load_state(run_id)
         if state.status is not RunStatus.READY:
             raise InvalidTransitionError(f"model input requires ready, got {state.status.value}")
+        if state.max_steps is not None and state.turn_index >= state.max_steps:
+            exhausted = self._append(
+                run_id,
+                EventType.RUN_STEP_BUDGET_EXHAUSTED,
+                {
+                    "completed_steps": state.turn_index,
+                    "max_steps": state.max_steps,
+                },
+            )
+            raise StepBudgetExhaustedError(exhausted.failure_reason or "step budget exhausted")
         return ModelInput.build(
             run_id=run_id,
             step_id=f"step-{state.turn_index + 1}",

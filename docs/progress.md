@@ -490,10 +490,9 @@ Lucas understanding gate — completed 2026-08-12:
 - Explained that `FinalAnswerAction` is not completion because trusted evidence,
   a completion Event, and Reducer-owned terminal transition are absent.
 
-## Current milestone — R4f durable verified tool turns
+## R4f durable verified tool turns
 
-Engineering implemented and locally verified; publication and Lucas
-understanding gate remain:
+Engineering, publication, and Lucas understanding gate complete:
 
 - Added replayed `turn_index` and `active_step_id` to immutable `RunState`.
 - Preserved backward compatibility: legacy `verification.succeeded` Events
@@ -512,9 +511,10 @@ understanding gate remain:
 - Proved `FinalAnswerAction` remains fail-closed and produces no Runtime Event
   without a future completion contract.
 
-Local evidence:
+Evidence:
 
 ```text
+Implementation: b6ad169
 R4f targeted tests: 44 passed
 Full suite: 181 passed, 1 skipped
 Ruff: All checks passed!
@@ -522,9 +522,48 @@ Format: 48 Python files already formatted
 Diff check: clean
 ```
 
+Lucas understanding gate — completed 2026-08-12:
+
+- Explained that step-scoped verification proves only one tool step and must
+  return the multi-step run to `READY`, not claim `COMPLETED`.
+- Explained that `turn_index` must be reconstructed from persisted Events by
+  the Reducer rather than stored in volatile Agent memory.
+- Explained why legacy unscoped Verification Events retain their historical
+  completion meaning until an explicit versioned migration is performed.
+
+## Current milestone — R4g durable model-step budget
+
+Engineering implemented and locally verified; publication and Lucas
+understanding gate remain:
+
+- Added an optional positive `max_steps` creation contract. New bounded runs
+  persist it in `run.created`; legacy creation Events without the field keep
+  their historical unbounded replay meaning.
+- Reused replayed `turn_index` as the consumed model-action count rather than
+  introducing a second counter that could diverge.
+- Added `run.step_budget_exhausted` and strict Reducer checks that its
+  `completed_steps` and `max_steps` match replayed State and prove exhaustion.
+- Added typed `StepBudgetExhaustedError` after the terminal failure Event is
+  durably appended.
+- Enforced the budget before requesting an Action, so an exhausted run invokes
+  neither the Model Adapter nor another Tool.
+- Proved the limit survives SQLite close/reopen and Runtime reconstruction:
+  one allowed turn remains consumed, the second request fails closed, and only
+  one `tool.requested` Event exists.
+
+Local evidence:
+
+```text
+R4g targeted tests: 53 passed
+Full suite: 189 passed, 1 skipped
+Ruff: All checks passed!
+Format: 48 Python files already formatted
+```
+
 Next executable step:
 
-1. Publish R4f as one atomic commit and synchronize the active project facts.
-2. Teach durable turn replay and complete the R4f understanding gate.
-3. Add a Runtime-owned persisted maximum-step budget whose exhaustion is an
-   explicit fail-closed Event and terminal state.
+1. Publish R4g atomically and synchronize the active project facts.
+2. Teach the durable budget contract and complete the R4g understanding gate.
+3. Define a Runtime-owned completion proposal/evidence/Event contract so a
+   `FinalAnswerAction` can be validated without directly controlling terminal
+   State.

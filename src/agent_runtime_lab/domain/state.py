@@ -32,6 +32,7 @@ class RunState:
     status: RunStatus = RunStatus.NEW
     next_sequence: int = 0
     turn_index: int = 0
+    max_steps: int | None = None
     active_step_id: str | None = None
     active_tool_call_id: str | None = None
     active_gate_proposal_digest: str | None = None
@@ -49,6 +50,12 @@ class RunState:
             raise EventValidationError("next_sequence must be non-negative")
         if self.turn_index < 0:
             raise EventValidationError("turn_index must be non-negative")
+        if self.max_steps is not None and (
+            not isinstance(self.max_steps, int)
+            or isinstance(self.max_steps, bool)
+            or self.max_steps < 1
+        ):
+            raise EventValidationError("max_steps must be a positive integer or None")
 
     @classmethod
     def initial(cls, run_id: str) -> RunState:

@@ -43,6 +43,10 @@ class ModelAdapterExhaustedError(RuntimeContractError):
     """A deterministic static adapter has no Action for the requested turn."""
 
 
+class StepBudgetExhaustedError(RuntimeContractError):
+    """A run cannot request another Model Action after exhausting its budget."""
+
+
 class UnsafeToolRetryError(RuntimeContractError):
     """An incomplete non-idempotent tool effect cannot be retried safely."""
 

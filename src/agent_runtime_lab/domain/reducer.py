@@ -78,7 +78,10 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
 
     if event.event_type is EventType.RUN_CREATED:
         _expect(state, RunStatus.NEW, event)
-        return replace(state, status=RunStatus.CREATED)
+        max_steps = event.payload.get("max_steps")
+        if max_steps is not None:
+            max_steps = _required_positive_int(event, "max_steps")
+        return replace(state, status=RunStatus.CREATED, max_steps=max_steps)
 
     if event.event_type is EventType.RUN_STARTED:
         _expect(state, RunStatus.CREATED, event)
@@ -91,6 +94,28 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
     if event.event_type is EventType.RUN_RESUMED:
         _expect(state, RunStatus.PAUSED, event)
         return replace(state, status=RunStatus.READY)
+
+    if event.event_type is EventType.RUN_STEP_BUDGET_EXHAUSTED:
+        _expect(state, RunStatus.READY, event)
+        max_steps = _required_positive_int(event, "max_steps")
+        completed_steps = event.payload.get("completed_steps")
+        if not isinstance(completed_steps, int) or isinstance(completed_steps, bool):
+            raise InvalidTransitionError(
+                "run.step_budget_exhausted requires integer payload.completed_steps"
+            )
+        if state.max_steps is None or max_steps != state.max_steps:
+            raise InvalidTransitionError(
+                "run.step_budget_exhausted does not match the run step budget"
+            )
+        if completed_steps != state.turn_index or completed_steps < max_steps:
+            raise InvalidTransitionError(
+                "run.step_budget_exhausted requires the durable budget to be exhausted"
+            )
+        return replace(
+            state,
+            status=RunStatus.FAILED,
+            failure_reason=f"step budget exhausted: {completed_steps}/{max_steps} steps consumed",
+        )
 
     if event.event_type is EventType.TOOL_REQUESTED:
         _expect(state, RunStatus.READY, event)

@@ -13,8 +13,8 @@ The active development branch is `durable-tool-execution-recovery`. The
 deterministic R1 core, durable R2 tool-effect path, R3 ownership and gate path,
 R4a restricted file-tool path, R4b verification/Fake Agent loop, R4c
 verification crash recovery, R4d timeout evidence, R4e static Model Adapter /
-Action boundary, and the local R4f durable multi-turn path are implemented on
-that branch.
+Action boundary, R4f durable multi-turn path, and R4g persisted step budget are
+implemented on that branch.
 R3.3c proposal revision rollover, concurrent duplicate semantics, and its
 understanding correction are complete. The R4a demonstration now lives under
 `examples/` rather than the reusable Runtime package.
@@ -70,14 +70,18 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
 - replayed `turn_index` and active step identity, step-scoped verification that
   returns a run to `READY`, and a two-turn static Agent that resumes after a
   SQLite/Runtime restart without repeating the first Action;
-- 181 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
+- a positive `max_steps` fixed by `run.created`, plus a durable
+  `run.step_budget_exhausted` failure that is checked before invoking the Model
+  Adapter or submitting another Tool request;
+- 189 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
   and 48 package/test Python files pass the format check.
 
-R3.3 and R4a-R4e engineering are published on the development branch; R4f is
-currently a verified local change. Nothing is claimed as merged to `main`. R4a
-is an in-process restricted file runner for a dedicated non-secret temporary
-workspace. Its path check and I/O are not one kernel-atomic operation, so a
-hostile concurrent process can still create a check/use race. It is not a
+R3.3 and R4a-R4f engineering are published on the development branch; R4g is
+implemented and verified in the current change. Nothing is claimed as merged
+to `main`. R4a is an in-process restricted file runner for a dedicated
+non-secret temporary workspace. Its path check and I/O are not one
+kernel-atomic operation, so a hostile concurrent process can still create a
+check/use race. It is not a
 production sandbox, secret-redaction layer, Shell, or complete agent loop. R4d
 records a timeout already enforced by a Runner/worker boundary; it does not
 claim that the synchronous in-process Runtime can safely interrupt arbitrary
@@ -164,6 +168,15 @@ Step-scoped success binds to the active `step_id`, advances the durable
 replayed State plus the previous persisted verification summary. It never
 depends on an Adapter-owned cursor. Final answers remain outside this loop
 until a trusted completion contract exists.
+
+R4g fixes a positive `max_steps` in the creation Event for new bounded runs.
+Replay therefore restores the same budget and consumed `turn_index` after a
+restart. Before requesting another Action, the Runtime checks those durable
+facts. Exhaustion appends `run.step_budget_exhausted`, moves `READY` to
+`FAILED`, and raises a typed error without calling the Model Adapter or Tool.
+Legacy `run.created` Events without `max_steps` retain their original replay
+meaning; any future upgrade must use explicit versioned migration rather than
+silently reinterpret historical Events.
 
 ## Learning workflow
 

@@ -48,6 +48,14 @@ def ready_state() -> RunState:
     )
 
 
+def budgeted_ready_state(max_steps: int) -> RunState:
+    return apply(
+        RunState.initial("run-1"),
+        event(0, EventType.RUN_CREATED, payload={"max_steps": max_steps}),
+        event(1, EventType.RUN_STARTED),
+    )
+
+
 def test_full_authorized_tool_lifecycle_completes() -> None:
     state = apply(
         ready_state(),
@@ -108,6 +116,61 @@ def test_step_scoped_verification_must_match_active_step() -> None:
                 EventType.VERIFICATION_SUCCEEDED,
                 payload={"scope": "step", "step_id": "step-2"},
             ),
+        )
+
+
+def test_step_budget_is_fixed_by_run_creation_and_exhaustion_fails_run() -> None:
+    state = apply(
+        budgeted_ready_state(1),
+        event(
+            2,
+            EventType.TOOL_REQUESTED,
+            payload={"step_id": "step-1", "tool_call_id": "tool-1"},
+        ),
+        event(3, EventType.TOOL_AUTHORIZED, payload={"tool_call_id": "tool-1"}),
+        event(4, EventType.TOOL_STARTED, payload={"tool_call_id": "tool-1"}),
+        event(5, EventType.TOOL_SUCCEEDED, payload={"tool_call_id": "tool-1"}),
+        event(
+            6,
+            EventType.VERIFICATION_SUCCEEDED,
+            payload={"scope": "step", "step_id": "step-1"},
+        ),
+    )
+
+    exhausted = reduce(
+        state,
+        event(
+            7,
+            EventType.RUN_STEP_BUDGET_EXHAUSTED,
+            payload={"completed_steps": 1, "max_steps": 1},
+        ),
+    )
+
+    assert state.max_steps == 1
+    assert exhausted.status is RunStatus.FAILED
+    assert exhausted.failure_reason == "step budget exhausted: 1/1 steps consumed"
+
+
+def test_step_budget_cannot_be_exhausted_before_durable_turn_reaches_limit() -> None:
+    state = budgeted_ready_state(2)
+
+    with pytest.raises(InvalidTransitionError, match="durable budget"):
+        reduce(
+            state,
+            event(
+                2,
+                EventType.RUN_STEP_BUDGET_EXHAUSTED,
+                payload={"completed_steps": 0, "max_steps": 2},
+            ),
+        )
+
+
+@pytest.mark.parametrize("max_steps", [0, -1, True, 1.5, "2"])
+def test_run_creation_rejects_invalid_step_budget(max_steps: object) -> None:
+    with pytest.raises(InvalidTransitionError, match="positive integer"):
+        reduce(
+            RunState.initial("run-1"),
+            event(0, EventType.RUN_CREATED, payload={"max_steps": max_steps}),
         )
 
 
