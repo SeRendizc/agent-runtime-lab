@@ -16,7 +16,7 @@ from agent_runtime_lab.completion import (
     CompletionResult,
     CompletionVerifier,
 )
-from agent_runtime_lab.domain.errors import InvalidTransitionError
+from agent_runtime_lab.domain.errors import InvalidTransitionError, StepBudgetExhaustedError
 from agent_runtime_lab.domain.state import RunState, RunStatus
 from agent_runtime_lab.domain.tool_effects import ToolReceipt
 from agent_runtime_lab.model_adapter import (
@@ -73,6 +73,37 @@ class ModelDrivenCompletionResult:
     action: FinalAnswerAction
     completion: CompletionResult
     state: RunState
+
+
+class ModelLoopOutcome(StrEnum):
+    """Why one bounded model loop returned control to its caller."""
+
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PAUSED = "paused"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelLoopResult:
+    """Inspectable evidence accumulated by one bounded loop invocation."""
+
+    outcome: ModelLoopOutcome
+    state: RunState
+    actions: tuple[ModelAction, ...]
+    tool_results: tuple[RuntimeToolResult, ...]
+    verifications: tuple[VerificationResult, ...]
+    completions: tuple[CompletionResult, ...]
+
+
+class ToolExpectationResolver(Protocol):
+    """Return trusted verification criteria for one proposed Tool Action."""
+
+    def expectation_for(
+        self,
+        context: ModelInput,
+        action: ToolCallAction,
+    ) -> VerificationExpectation:
+        """Resolve application-owned criteria without trusting model arguments."""
 
 
 class FakeAgentCheckpoint(StrEnum):
@@ -207,4 +238,130 @@ class ModelDrivenFakeAgent:
             action=proposed,
             completion=completion,
             state=state,
+        )
+
+    def run_loop(
+        self,
+        *,
+        tool_expectations: ToolExpectationResolver,
+        completion_expectation: CompletionExpectation,
+    ) -> ModelLoopResult:
+        """Run bounded model Actions until terminal state or durable Gate pause."""
+
+        initial = self._runtime.load_state(self._run_id)
+        if initial.status is not RunStatus.READY:
+            raise InvalidTransitionError(f"model loop requires ready, got {initial.status.value}")
+        if initial.max_steps is None:
+            raise InvalidTransitionError(
+                "bounded model loop requires max_steps persisted at run creation"
+            )
+
+        actions: list[ModelAction] = []
+        tool_results: list[RuntimeToolResult] = []
+        verifications: list[VerificationResult] = []
+        completions: list[CompletionResult] = []
+
+        while True:
+            try:
+                context = self._runtime.build_model_input(self._run_id)
+            except StepBudgetExhaustedError:
+                return self._loop_result(
+                    ModelLoopOutcome.FAILED,
+                    actions,
+                    tool_results,
+                    verifications,
+                    completions,
+                )
+
+            try:
+                proposed = request_model_action(self._adapter, context)
+            except Exception:
+                self._runtime.record_model_action_failure(
+                    self._run_id,
+                    "model adapter failed to produce a valid bounded action",
+                )
+                return self._loop_result(
+                    ModelLoopOutcome.FAILED,
+                    actions,
+                    tool_results,
+                    verifications,
+                    completions,
+                )
+            actions.append(proposed)
+
+            if isinstance(proposed, FinalAnswerAction):
+                completion = self._completion_verifier.verify(
+                    proposed,
+                    context,
+                    completion_expectation,
+                )
+                completions.append(completion)
+                state = self._runtime.record_completion(context, proposed, completion)
+                if state.status is RunStatus.COMPLETED:
+                    return self._loop_result(
+                        ModelLoopOutcome.COMPLETED,
+                        actions,
+                        tool_results,
+                        verifications,
+                        completions,
+                    )
+                continue
+
+            tool_result = self._runtime.submit(tool_request_from_action(context, proposed))
+            tool_results.append(tool_result)
+            if tool_result.outcome is not RuntimeToolOutcome.EXECUTED:
+                outcome = (
+                    ModelLoopOutcome.PAUSED
+                    if tool_result.outcome is RuntimeToolOutcome.AWAITING_GATE
+                    else ModelLoopOutcome.FAILED
+                )
+                return self._loop_result(
+                    outcome,
+                    actions,
+                    tool_results,
+                    verifications,
+                    completions,
+                )
+            if tool_result.receipt is None or tool_result.state.status is not RunStatus.VERIFYING:
+                return self._loop_result(
+                    ModelLoopOutcome.FAILED,
+                    actions,
+                    tool_results,
+                    verifications,
+                    completions,
+                )
+
+            expectation = tool_expectations.expectation_for(context, proposed)
+            if not isinstance(expectation, VerificationExpectation):
+                raise TypeError("tool expectation resolver must return VerificationExpectation")
+            verification = self._verifier.verify(tool_result.receipt, expectation)
+            verifications.append(verification)
+            state = self._runtime.record_step_verification(
+                self._run_id,
+                verification,
+            )
+            if state.status is RunStatus.FAILED:
+                return self._loop_result(
+                    ModelLoopOutcome.FAILED,
+                    actions,
+                    tool_results,
+                    verifications,
+                    completions,
+                )
+
+    def _loop_result(
+        self,
+        outcome: ModelLoopOutcome,
+        actions: list[ModelAction],
+        tool_results: list[RuntimeToolResult],
+        verifications: list[VerificationResult],
+        completions: list[CompletionResult],
+    ) -> ModelLoopResult:
+        return ModelLoopResult(
+            outcome=outcome,
+            state=self._runtime.load_state(self._run_id),
+            actions=tuple(actions),
+            tool_results=tuple(tool_results),
+            verifications=tuple(verifications),
+            completions=tuple(completions),
         )

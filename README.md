@@ -75,10 +75,12 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
   Adapter or submitting another Tool request;
 - trusted completion evidence and distinct accepted/rejected Events that bind
   a final answer to the current durable step and prior verification;
-- 197 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
+- a bounded Agent loop that dispatches Tool and Completion Actions until a
+  terminal State, durable Gate pause, or persisted budget exhaustion;
+- 204 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
   and 48 package/test Python files pass the format check.
 
-R3.3 and R4a-R4g engineering are published on the development branch; R4h is
+R3.3 and R4a-R4h engineering are published on the development branch; R4i is
 implemented and verified in the current change. Nothing is claimed as merged
 to `main`. R4a is an in-process restricted file runner for a dedicated
 non-secret temporary workspace. Its path check and I/O are not one
@@ -187,6 +189,15 @@ appends `completion.rejected`, consumes that model Action, and returns to
 `READY` while budget remains. Runtime performs the early budget check before
 the Adapter call, and Reducer independently rejects completion or model tool
 Events that would exceed the durable budget.
+
+R4i composes those trusted turns into `run_loop`. The loop refuses legacy Runs
+without persisted `max_steps`, requests exactly one Action per turn, and keeps
+running only after a durable turn increment. Tool verification failure and
+budget exhaustion return `FAILED`; accepted completion returns `COMPLETED`;
+PAIR or USER_GATE escalation returns `PAUSED` without approving, executing, or
+asking the Adapter again. Invalid, exhausted, or failing Adapters append a
+sanitized `model.action_failed` Event so the Run cannot remain ambiguously
+`READY` after loop failure.
 
 ## Learning workflow
 

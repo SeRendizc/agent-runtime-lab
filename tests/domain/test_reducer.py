@@ -165,6 +165,20 @@ def test_step_budget_cannot_be_exhausted_before_durable_turn_reaches_limit() -> 
         )
 
 
+def test_model_action_failure_terminates_ready_run() -> None:
+    state = reduce(
+        budgeted_ready_state(2),
+        event(
+            2,
+            EventType.MODEL_ACTION_FAILED,
+            payload={"reason": "adapter returned invalid output"},
+        ),
+    )
+
+    assert state.status is RunStatus.FAILED
+    assert state.failure_reason == "adapter returned invalid output"
+
+
 def test_completion_acceptance_is_the_only_new_model_path_to_completed() -> None:
     state = reduce(
         budgeted_ready_state(1),

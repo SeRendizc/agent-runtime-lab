@@ -124,6 +124,14 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             failure_reason=f"step budget exhausted: {completed_steps}/{max_steps} steps consumed",
         )
 
+    if event.event_type is EventType.MODEL_ACTION_FAILED:
+        _expect(state, RunStatus.READY, event)
+        return replace(
+            state,
+            status=RunStatus.FAILED,
+            failure_reason=_required_text(event, "reason"),
+        )
+
     if event.event_type in {
         EventType.COMPLETION_ACCEPTED,
         EventType.COMPLETION_REJECTED,

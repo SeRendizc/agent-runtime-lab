@@ -393,6 +393,17 @@ class AuthorizedToolRuntime:
             observation=self._load_step_observation(run_id),
         )
 
+    def record_model_action_failure(self, run_id: str, reason: str) -> RunState:
+        """Fail a ready Run with a sanitized model-boundary reason."""
+
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("model action failure reason must be non-empty")
+        return self._append(
+            run_id,
+            EventType.MODEL_ACTION_FAILED,
+            {"reason": reason},
+        )
+
     def record_verification(
         self,
         run_id: str,

@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from agent_runtime_lab.authorized_tool_runtime import AuthorizedToolRuntime
+from agent_runtime_lab.authorized_tool_runtime import (
+    AuthorizedToolRuntime,
+    RuntimeToolOutcome,
+)
 from agent_runtime_lab.completion import CompletionExpectation, CompletionOutcome
 from agent_runtime_lab.domain.errors import InvalidTransitionError, StepBudgetExhaustedError
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
@@ -17,6 +20,7 @@ from agent_runtime_lab.fake_agent import (
     FakeAgent,
     FakeAgentCheckpoint,
     ModelDrivenFakeAgent,
+    ModelLoopOutcome,
 )
 from agent_runtime_lab.model_adapter import (
     FinalAnswerAction,
@@ -57,6 +61,21 @@ class CrashAfterToolResult:
     def reach(self, checkpoint: FakeAgentCheckpoint) -> None:
         assert checkpoint is FakeAgentCheckpoint.AFTER_TOOL_RESULT
         raise SimulatedCrash("crashed after durable tool result")
+
+
+class PathExpectationResolver:
+    def __init__(self, digests: dict[str, str]) -> None:
+        self._digests = digests
+
+    def expectation_for(
+        self,
+        context: ModelInput,
+        action: ToolCallAction,
+    ) -> VerificationExpectation:
+        del context
+        path = action.arguments["path"]
+        assert isinstance(path, str)
+        return VerificationExpectation(path=path, sha256=self._digests[path])
 
 
 def make_runtime(
@@ -491,6 +510,246 @@ def test_rejected_completion_consumes_budget_before_adapter_can_run_again(
     assert (
         events.load("run-rejected-completion")[-1].event_type is EventType.RUN_STEP_BUDGET_EXHAUSTED
     )
+    events.close()
+    effects.close()
+
+
+def test_bounded_loop_runs_tool_rejects_completion_then_completes(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    content = "bounded loop evidence"
+    workspace.joinpath("notes.txt").write_text(content, encoding="utf-8")
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-loop", max_steps=3)
+    agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(
+            actions=(
+                ToolCallAction.build(
+                    tool_call_id="call-1",
+                    tool_name="read_file",
+                    arguments={"path": "notes.txt"},
+                ),
+                FinalAnswerAction(answer="not done"),
+                FinalAnswerAction(answer="done"),
+            )
+        ),
+        run_id="run-loop",
+    )
+
+    result = agent.run_loop(
+        tool_expectations=PathExpectationResolver(
+            {"notes.txt": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+        ),
+        completion_expectation=CompletionExpectation(expected_answer="done"),
+    )
+
+    assert result.outcome is ModelLoopOutcome.COMPLETED
+    assert result.state.status is RunStatus.COMPLETED
+    assert result.state.turn_index == 3
+    assert len(result.actions) == 3
+    assert len(result.tool_results) == 1
+    assert len(result.verifications) == 1
+    assert [item.outcome for item in result.completions] == [
+        CompletionOutcome.REJECTED,
+        CompletionOutcome.ACCEPTED,
+    ]
+    event_types = [item.event_type for item in events.load("run-loop")]
+    assert event_types[-3:] == [
+        EventType.VERIFICATION_SUCCEEDED,
+        EventType.COMPLETION_REJECTED,
+        EventType.COMPLETION_ACCEPTED,
+    ]
+    events.close()
+    effects.close()
+
+
+def test_bounded_loop_pauses_at_gate_without_reinvoking_adapter(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-loop-gate", max_steps=2)
+
+    class CountingAdapter:
+        calls = 0
+
+        def next_action(self, context: ModelInput) -> ModelAction:
+            self.calls += 1
+            return ToolCallAction.build(
+                tool_call_id="call-write",
+                tool_name="write_file",
+                arguments={"path": "notes.txt", "content": "paused"},
+            )
+
+    adapter = CountingAdapter()
+
+    class ForbiddenExpectations:
+        def expectation_for(
+            self,
+            context: ModelInput,
+            action: ToolCallAction,
+        ) -> VerificationExpectation:
+            raise AssertionError("paused tool must not resolve execution expectations")
+
+    agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=adapter,
+        run_id="run-loop-gate",
+    )
+
+    result = agent.run_loop(
+        tool_expectations=ForbiddenExpectations(),
+        completion_expectation=CompletionExpectation(expected_answer="done"),
+    )
+
+    assert result.outcome is ModelLoopOutcome.PAUSED
+    assert result.state.status is RunStatus.AWAITING_GATE
+    assert adapter.calls == 1
+    assert len(result.actions) == 1
+    assert len(result.tool_results) == 1
+    assert result.tool_results[0].outcome is RuntimeToolOutcome.AWAITING_GATE
+    assert not workspace.joinpath("notes.txt").exists()
+    events.close()
+    effects.close()
+
+
+def test_bounded_loop_stops_after_failed_tool_verification(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    workspace.joinpath("notes.txt").write_text("actual", encoding="utf-8")
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-loop-verification", max_steps=2)
+
+    class ForbiddenSecondActionAdapter:
+        calls = 0
+
+        def next_action(self, context: ModelInput) -> ModelAction:
+            self.calls += 1
+            if self.calls > 1:
+                raise AssertionError("failed verification must stop the loop")
+            return ToolCallAction.build(
+                tool_call_id="call-1",
+                tool_name="read_file",
+                arguments={"path": "notes.txt"},
+            )
+
+    adapter = ForbiddenSecondActionAdapter()
+    agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=adapter,
+        run_id="run-loop-verification",
+    )
+
+    result = agent.run_loop(
+        tool_expectations=PathExpectationResolver({"notes.txt": "0" * 64}),
+        completion_expectation=CompletionExpectation(expected_answer="done"),
+    )
+
+    assert result.outcome is ModelLoopOutcome.FAILED
+    assert result.state.status is RunStatus.FAILED
+    assert result.state.turn_index == 0
+    assert adapter.calls == 1
+    assert len(result.verifications) == 1
+    assert result.verifications[0].passed is False
+    assert events.load("run-loop-verification")[-1].event_type is EventType.VERIFICATION_FAILED
+    events.close()
+    effects.close()
+
+
+def test_bounded_loop_budget_exhaustion_becomes_durable_failure(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    content = "only action"
+    workspace.joinpath("notes.txt").write_text(content, encoding="utf-8")
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-loop-budget", max_steps=1)
+    agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(
+            actions=(
+                ToolCallAction.build(
+                    tool_call_id="call-1",
+                    tool_name="read_file",
+                    arguments={"path": "notes.txt"},
+                ),
+            )
+        ),
+        run_id="run-loop-budget",
+    )
+
+    result = agent.run_loop(
+        tool_expectations=PathExpectationResolver(
+            {"notes.txt": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+        ),
+        completion_expectation=CompletionExpectation(expected_answer="done"),
+    )
+
+    assert result.outcome is ModelLoopOutcome.FAILED
+    assert result.state.status is RunStatus.FAILED
+    assert result.state.failure_reason == "step budget exhausted: 1/1 steps consumed"
+    assert len(result.actions) == 1
+    assert events.load("run-loop-budget")[-1].event_type is EventType.RUN_STEP_BUDGET_EXHAUSTED
+    events.close()
+    effects.close()
+
+
+def test_bounded_loop_fails_closed_when_static_adapter_is_exhausted(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-loop-adapter", max_steps=2)
+    agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(actions=()),
+        run_id="run-loop-adapter",
+    )
+
+    result = agent.run_loop(
+        tool_expectations=PathExpectationResolver({}),
+        completion_expectation=CompletionExpectation(
+            expected_answer="done",
+            require_verified_observation=False,
+        ),
+    )
+
+    assert result.outcome is ModelLoopOutcome.FAILED
+    assert result.state.status is RunStatus.FAILED
+    assert result.actions == ()
+    assert events.load("run-loop-adapter")[-1].event_type is EventType.MODEL_ACTION_FAILED
+    events.close()
+    effects.close()
+
+
+def test_bounded_loop_rejects_legacy_run_without_persisted_budget(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_run(events, "run-loop-unbounded")
+    agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(actions=(FinalAnswerAction(answer="done"),)),
+        run_id="run-loop-unbounded",
+    )
+
+    with pytest.raises(InvalidTransitionError, match="requires max_steps"):
+        agent.run_loop(
+            tool_expectations=PathExpectationResolver({}),
+            completion_expectation=CompletionExpectation(
+                expected_answer="done",
+                require_verified_observation=False,
+            ),
+        )
+
+    assert runtime.load_state("run-loop-unbounded").status is RunStatus.READY
+    assert len(events.load("run-loop-unbounded")) == 2
     events.close()
     effects.close()
 

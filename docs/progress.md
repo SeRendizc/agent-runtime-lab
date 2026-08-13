@@ -570,8 +570,7 @@ versioned migration retires them.
 
 ## Current milestone — R4h trusted completion contract
 
-Engineering implemented and verified locally; publication and Lucas
-understanding gate remain:
+Engineering implemented, verified, published, and understood by Lucas:
 
 - Added application-owned `CompletionExpectation` and deterministic
   `CompletionVerifier` evidence bound to the exact final-answer SHA-256.
@@ -590,6 +589,7 @@ understanding gate remain:
 Evidence:
 
 ```text
+Implementation: 3c4c327
 R4h targeted tests: 46 passed
 Full suite: 197 passed, 1 skipped
 Ruff: All checks passed!
@@ -597,9 +597,49 @@ Format: 48 Python files already formatted
 Diff check: clean
 ```
 
+Lucas understanding gate — completed 2026-08-13:
+
+- Explained that a final-answer declaration is not proof that trusted success
+  conditions were checked.
+- Explained that rejected completion is not terminal failure but still consumes
+  one model Action and its durable budget.
+- Distinguished Runtime command orchestration and early side-effect avoidance
+  from Reducer-owned final State invariants; both are Runtime control-plane
+  responsibilities.
+
+## Current milestone — R4i bounded Agent loop
+
+Engineering implemented and verified locally; publication and Lucas
+understanding gate remain:
+
+- Added `run_loop` over the existing Tool and Completion contracts; it requests
+  exactly one Adapter Action and dispatches by trusted Action type each turn.
+- Refused to start on legacy Runs without persisted `max_steps`, so loop
+  termination never depends on the Adapter voluntarily stopping.
+- Continued only after step verification or completion rejection durably
+  advances `turn_index`; otherwise returned terminal `FAILED/COMPLETED` or a
+  durable `PAUSED` Gate boundary.
+- Added trusted `ToolExpectationResolver`: application code owns verification
+  criteria, and paused/denied Tools do not resolve execution expectations.
+- Added `model.action_failed` for invalid, exhausted, or failing Adapter calls,
+  persisting a sanitized terminal reason instead of leaving the Run `READY`.
+- Proved Tool -> rejected completion -> accepted completion, Gate pause without
+  repeated Adapter invocation, verification failure, budget exhaustion,
+  Adapter exhaustion, and unbounded legacy Run rejection.
+
+Evidence:
+
+```text
+R4i targeted tests: 51 passed
+Full suite: 204 passed, 1 skipped
+Ruff: All checks passed!
+Format: 48 Python files already formatted
+Diff check: clean
+```
+
 Next executable step:
 
-1. Run the final full suite after Reducer budget hardening.
-2. Publish R4h and synchronize the control repository.
-3. Teach the completion contract and complete the R4h understanding gate.
-4. Build the bounded Agent Loop over the now-trusted tool and completion turns.
+1. Publish R4i atomically and synchronize the control repository.
+2. Teach the bounded-loop termination and Gate pause contracts.
+3. Enter R4j Failure Injection, Gate resume orchestration, and Snapshot/recovery
+   closure.
