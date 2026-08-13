@@ -73,11 +73,14 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
 - a positive `max_steps` fixed by `run.created`, plus a durable
   `run.step_budget_exhausted` failure that is checked before invoking the Model
   Adapter or submitting another Tool request;
-- 189 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
+- trusted completion evidence and distinct accepted/rejected Events that bind
+  a final answer to the current durable step and prior verification;
+- 197 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
   and 48 package/test Python files pass the format check.
 
-R3.3 and R4a-R4g engineering are published on the development branch. Nothing
-is claimed as merged to `main`. R4a is an in-process restricted file runner for a dedicated
+R3.3 and R4a-R4g engineering are published on the development branch; R4h is
+implemented and verified in the current change. Nothing is claimed as merged
+to `main`. R4a is an in-process restricted file runner for a dedicated
 non-secret temporary workspace. Its path check and I/O are not one
 kernel-atomic operation, so a hostile concurrent process can still create a
 check/use race. It is not a
@@ -165,8 +168,7 @@ verification. Legacy Events without a scope still replay to `COMPLETED`.
 Step-scoped success binds to the active `step_id`, advances the durable
 `turn_index`, and returns to `READY`. The next `ModelInput` is rebuilt from
 replayed State plus the previous persisted verification summary. It never
-depends on an Adapter-owned cursor. Final answers remain outside this loop
-until a trusted completion contract exists.
+depends on an Adapter-owned cursor.
 
 R4g fixes a positive `max_steps` in the creation Event for new bounded runs.
 Replay therefore restores the same budget and consumed `turn_index` after a
@@ -176,6 +178,15 @@ facts. Exhaustion appends `run.step_budget_exhausted`, moves `READY` to
 Legacy `run.created` Events without `max_steps` retain their original replay
 meaning; any future upgrade must use explicit versioned migration rather than
 silently reinterpret historical Events.
+
+R4h adds a separate completion contract. `FinalAnswerAction` remains an
+untrusted proposal; a trusted `CompletionVerifier` binds its exact answer to
+application-owned expectations and the persisted verification observation.
+Only `completion.accepted` moves `READY` to `COMPLETED`. A rejected proposal
+appends `completion.rejected`, consumes that model Action, and returns to
+`READY` while budget remains. Runtime performs the early budget check before
+the Adapter call, and Reducer independently rejects completion or model tool
+Events that would exceed the durable budget.
 
 ## Learning workflow
 

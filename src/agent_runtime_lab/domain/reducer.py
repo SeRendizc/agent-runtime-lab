@@ -46,6 +46,13 @@ def _required_positive_int(event: ExecutionEvent, field: str) -> int:
     return value
 
 
+def _expect_model_budget_available(state: RunState, event: ExecutionEvent) -> None:
+    if state.max_steps is not None and state.turn_index >= state.max_steps:
+        raise InvalidTransitionError(
+            f"{event.event_type.value} cannot exceed the durable model step budget"
+        )
+
+
 def _expect_active_gate(state: RunState, event: ExecutionEvent) -> None:
     _expect_active_tool(state, event)
     proposal_digest = _required_text(event, "proposal_digest")
@@ -117,6 +124,27 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             failure_reason=f"step budget exhausted: {completed_steps}/{max_steps} steps consumed",
         )
 
+    if event.event_type in {
+        EventType.COMPLETION_ACCEPTED,
+        EventType.COMPLETION_REJECTED,
+    }:
+        _expect(state, RunStatus.READY, event)
+        _expect_model_budget_available(state, event)
+        step_id = _required_text(event, "step_id")
+        if step_id != f"step-{state.turn_index + 1}":
+            raise InvalidTransitionError(
+                f"{event.event_type.value} does not match the next durable step"
+            )
+        _required_text(event, "answer_sha256")
+        _required_text(event, "summary")
+        if event.event_type is EventType.COMPLETION_ACCEPTED:
+            return replace(
+                state,
+                status=RunStatus.COMPLETED,
+                turn_index=state.turn_index + 1,
+            )
+        return replace(state, turn_index=state.turn_index + 1)
+
     if event.event_type is EventType.TOOL_REQUESTED:
         _expect(state, RunStatus.READY, event)
         step_id = event.payload.get("step_id")
@@ -124,6 +152,8 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             raise InvalidTransitionError(
                 "tool.requested payload.step_id must be a non-empty string"
             )
+        if step_id is not None:
+            _expect_model_budget_available(state, event)
         return replace(
             state,
             status=RunStatus.TOOL_PENDING,

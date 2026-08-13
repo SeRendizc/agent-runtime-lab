@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agent_runtime_lab.authorized_tool_runtime import AuthorizedToolRuntime
+from agent_runtime_lab.completion import CompletionExpectation, CompletionOutcome
 from agent_runtime_lab.domain.errors import InvalidTransitionError, StepBudgetExhaustedError
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
 from agent_runtime_lab.domain.state import RunStatus
@@ -402,6 +403,94 @@ def test_model_driven_tool_turn_rejects_final_answer_without_completion_contract
 
     assert runtime.load_state("run-final-answer").status is RunStatus.READY
     assert len(events.load("run-final-answer")) == 2
+    events.close()
+    effects.close()
+
+
+def test_model_completion_requires_trusted_verification_and_survives_restart(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    content = "durable completion evidence"
+    workspace.joinpath("notes.txt").write_text(content, encoding="utf-8")
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-completion", max_steps=2)
+    actions: tuple[ModelAction, ...] = (
+        ToolCallAction.build(
+            tool_call_id="call-1",
+            tool_name="read_file",
+            arguments={"path": "notes.txt"},
+        ),
+        FinalAnswerAction(answer="done"),
+    )
+    first_agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(actions=actions),
+        run_id="run-completion",
+    )
+
+    tool_turn = first_agent.run_tool_turn(
+        VerificationExpectation(
+            path="notes.txt",
+            sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        )
+    )
+    assert tool_turn.state.status is RunStatus.READY
+    assert tool_turn.state.turn_index == 1
+    events.close()
+    effects.close()
+
+    recovered_runtime, recovered_events, recovered_effects = make_runtime(tmp_path, workspace)
+    recovered_agent = ModelDrivenFakeAgent(
+        runtime=recovered_runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(actions=actions),
+        run_id="run-completion",
+    )
+
+    completed = recovered_agent.run_completion_turn(CompletionExpectation(expected_answer="done"))
+
+    assert completed.completion.outcome is CompletionOutcome.ACCEPTED
+    assert completed.state.status is RunStatus.COMPLETED
+    assert completed.state.turn_index == 2
+    persisted = recovered_events.load("run-completion")
+    assert persisted[-1].event_type is EventType.COMPLETION_ACCEPTED
+    assert persisted[-1].payload["answer"] == "done"
+    assert persisted[-1].payload["step_id"] == "step-2"
+    recovered_events.close()
+    recovered_effects.close()
+
+
+def test_rejected_completion_consumes_budget_before_adapter_can_run_again(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-rejected-completion", max_steps=1)
+    agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(actions=(FinalAnswerAction(answer="unsupported claim"),)),
+        run_id="run-rejected-completion",
+    )
+
+    rejected = agent.run_completion_turn(CompletionExpectation(expected_answer="done"))
+
+    assert rejected.completion.outcome is CompletionOutcome.REJECTED
+    assert rejected.state.status is RunStatus.READY
+    assert rejected.state.turn_index == 1
+    assert events.load("run-rejected-completion")[-1].event_type is EventType.COMPLETION_REJECTED
+
+    with pytest.raises(StepBudgetExhaustedError, match="1/1"):
+        agent.run_completion_turn(CompletionExpectation(expected_answer="done"))
+
+    assert runtime.load_state("run-rejected-completion").status is RunStatus.FAILED
+    assert (
+        events.load("run-rejected-completion")[-1].event_type is EventType.RUN_STEP_BUDGET_EXHAUSTED
+    )
     events.close()
     effects.close()
 

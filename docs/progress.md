@@ -534,7 +534,7 @@ Lucas understanding gate — completed 2026-08-12:
 ## Current milestone — R4g durable model-step budget
 
 Engineering implemented, verified, and published; Lucas understanding gate
-remains:
+completed 2026-08-13:
 
 - Added an optional positive `max_steps` creation contract. New bounded runs
   persist it in `run.created`; legacy creation Events without the field keep
@@ -561,9 +561,45 @@ Ruff: All checks passed!
 Format: 48 Python files already formatted
 ```
 
+Lucas explained that the budget is a per-Run contract rather than a Runtime
+constructor default. He also identified the need to preserve old protocol
+records; the gate clarified that the pre-Adapter check prevents model cost,
+latency, and side effects, while Reducer remains the final invariant owner.
+New writers use the new schema, but old logs remain readable until an explicit
+versioned migration retires them.
+
+## Current milestone — R4h trusted completion contract
+
+Engineering implemented and verified locally; publication and Lucas
+understanding gate remain:
+
+- Added application-owned `CompletionExpectation` and deterministic
+  `CompletionVerifier` evidence bound to the exact final-answer SHA-256.
+- Required a trusted prior verification observation by default; a bare model
+  statement cannot prove task completion.
+- Added `completion.accepted` and `completion.rejected`. Only accepted evidence
+  enters `COMPLETED`; rejection consumes one model Action and returns to
+  `READY` for a bounded correction.
+- Bound completion evidence to the current replayed `run_id`, `turn_index`, and
+  Runtime-generated `step_id`, rejecting stale contexts and mismatched answers.
+- Enforced model-step budget both before Adapter invocation and inside Reducer,
+  so direct Event injection cannot bypass the durable limit.
+- Proved tool verification, SQLite close/reopen, Adapter reconstruction, and a
+  second-turn completion produce exactly one durable accepted Event.
+
+Evidence:
+
+```text
+R4h targeted tests: 46 passed
+Full suite: 197 passed, 1 skipped
+Ruff: All checks passed!
+Format: 48 Python files already formatted
+Diff check: clean
+```
+
 Next executable step:
 
-1. Teach the durable budget contract and complete the R4g understanding gate.
-2. Define a Runtime-owned completion proposal/evidence/Event contract so a
-   `FinalAnswerAction` can be validated without directly controlling terminal
-   State.
+1. Run the final full suite after Reducer budget hardening.
+2. Publish R4h and synchronize the control repository.
+3. Teach the completion contract and complete the R4h understanding gate.
+4. Build the bounded Agent Loop over the now-trusted tool and completion turns.

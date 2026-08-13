@@ -11,10 +11,16 @@ from agent_runtime_lab.authorized_tool_runtime import (
     RuntimeToolOutcome,
     RuntimeToolResult,
 )
+from agent_runtime_lab.completion import (
+    CompletionExpectation,
+    CompletionResult,
+    CompletionVerifier,
+)
 from agent_runtime_lab.domain.errors import InvalidTransitionError
 from agent_runtime_lab.domain.state import RunState, RunStatus
 from agent_runtime_lab.domain.tool_effects import ToolReceipt
 from agent_runtime_lab.model_adapter import (
+    FinalAnswerAction,
     ModelAction,
     ModelAdapter,
     ModelInput,
@@ -56,6 +62,16 @@ class ModelDrivenToolTurnResult:
     action: ToolCallAction
     tool_result: RuntimeToolResult
     verification: VerificationResult
+    state: RunState
+
+
+@dataclass(frozen=True, slots=True)
+class ModelDrivenCompletionResult:
+    """Evidence for one Runtime-validated final-answer proposal."""
+
+    context: ModelInput
+    action: FinalAnswerAction
+    completion: CompletionResult
     state: RunState
 
 
@@ -136,11 +152,13 @@ class ModelDrivenFakeAgent:
         verifier: ReceiptVerifier,
         adapter: ModelAdapter,
         run_id: str,
+        completion_verifier: CompletionVerifier | None = None,
     ) -> None:
         self._runtime = runtime
         self._verifier = verifier
         self._adapter = adapter
         self._run_id = run_id
+        self._completion_verifier = completion_verifier or CompletionVerifier()
 
     def run_tool_turn(
         self,
@@ -167,5 +185,26 @@ class ModelDrivenFakeAgent:
             action=proposed,
             tool_result=tool_result,
             verification=verification,
+            state=state,
+        )
+
+    def run_completion_turn(
+        self,
+        expectation: CompletionExpectation,
+    ) -> ModelDrivenCompletionResult:
+        """Validate exactly one final-answer Action through the trusted Runtime."""
+
+        context = self._runtime.build_model_input(self._run_id)
+        proposed = request_model_action(self._adapter, context)
+        if not isinstance(proposed, FinalAnswerAction):
+            raise InvalidTransitionError(
+                "model-driven completion turn requires a final-answer action"
+            )
+        completion = self._completion_verifier.verify(proposed, context, expectation)
+        state = self._runtime.record_completion(context, proposed, completion)
+        return ModelDrivenCompletionResult(
+            context=context,
+            action=proposed,
+            completion=completion,
             state=state,
         )

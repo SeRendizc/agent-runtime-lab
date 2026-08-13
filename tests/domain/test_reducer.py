@@ -165,6 +165,77 @@ def test_step_budget_cannot_be_exhausted_before_durable_turn_reaches_limit() -> 
         )
 
 
+def test_completion_acceptance_is_the_only_new_model_path_to_completed() -> None:
+    state = reduce(
+        budgeted_ready_state(1),
+        event(
+            2,
+            EventType.COMPLETION_ACCEPTED,
+            payload={
+                "answer_sha256": "digest",
+                "step_id": "step-1",
+                "summary": "accepted",
+            },
+        ),
+    )
+
+    assert state.status is RunStatus.COMPLETED
+    assert state.turn_index == 1
+
+
+def test_completion_rejection_consumes_action_and_returns_to_ready() -> None:
+    state = reduce(
+        budgeted_ready_state(2),
+        event(
+            2,
+            EventType.COMPLETION_REJECTED,
+            payload={
+                "answer_sha256": "digest",
+                "step_id": "step-1",
+                "summary": "rejected",
+            },
+        ),
+    )
+
+    assert state.status is RunStatus.READY
+    assert state.turn_index == 1
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [EventType.COMPLETION_ACCEPTED, EventType.COMPLETION_REJECTED],
+)
+def test_completion_event_cannot_bypass_exhausted_budget(
+    event_type: EventType,
+) -> None:
+    state = apply(
+        budgeted_ready_state(1),
+        event(
+            2,
+            EventType.COMPLETION_REJECTED,
+            payload={
+                "answer_sha256": "digest",
+                "step_id": "step-1",
+                "summary": "rejected",
+            },
+        ),
+    )
+
+    with pytest.raises(InvalidTransitionError, match="durable model step budget"):
+        reduce(
+            state,
+            event(
+                3,
+                event_type,
+                payload={
+                    "answer_sha256": "digest",
+                    "step_id": "step-2",
+                    "summary": "cannot be accepted",
+                },
+            ),
+        )
+
+
 @pytest.mark.parametrize("max_steps", [0, -1, True, 1.5, "2"])
 def test_run_creation_rejects_invalid_step_budget(max_steps: object) -> None:
     with pytest.raises(InvalidTransitionError, match="positive integer"):

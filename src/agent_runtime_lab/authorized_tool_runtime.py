@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
+from agent_runtime_lab.completion import CompletionOutcome, CompletionResult
 from agent_runtime_lab.domain.errors import (
     GateReferenceMismatchError,
     InvalidTransitionError,
@@ -19,7 +21,7 @@ from agent_runtime_lab.domain.replay import replay
 from agent_runtime_lab.domain.state import RunState, RunStatus
 from agent_runtime_lab.domain.tool_effects import ToolIntent, ToolOutcome, ToolReceipt
 from agent_runtime_lab.durable_tool_executor import DurableToolExecutor
-from agent_runtime_lab.model_adapter import ModelInput
+from agent_runtime_lab.model_adapter import FinalAnswerAction, ModelInput
 from agent_runtime_lab.ownership.authorization import (
     AuthorizationContext,
     AuthorizationDecision,
@@ -444,6 +446,52 @@ class AuthorizedToolRuntime:
             "summary": result.summary,
         }
         return self._append(run_id, EventType.VERIFICATION_SUCCEEDED, payload)
+
+    def record_completion(
+        self,
+        context: ModelInput,
+        action: FinalAnswerAction,
+        result: CompletionResult,
+    ) -> RunState:
+        """Persist trusted evidence for one exact final-answer proposal."""
+
+        if not isinstance(result, CompletionResult):
+            raise TypeError("completion verifier must return CompletionResult")
+        state = self.load_state(context.run_id)
+        if state.status is not RunStatus.READY:
+            raise InvalidTransitionError(
+                f"completion recording requires ready, got {state.status.value}"
+            )
+        if (
+            context.state_status is not RunStatus.READY
+            or context.turn_index != state.turn_index
+            or context.step_id != f"step-{state.turn_index + 1}"
+        ):
+            raise InvalidTransitionError("completion context is stale or untrusted")
+
+        answer_sha256 = hashlib.sha256(action.answer.encode("utf-8")).hexdigest()
+        if result.answer_sha256 != answer_sha256:
+            raise InvalidTransitionError("completion evidence does not match proposed answer")
+        payload = {
+            "answer": action.answer,
+            "answer_sha256": answer_sha256,
+            "checks": [
+                {
+                    "name": check.name,
+                    "passed": check.passed,
+                    "message": check.message,
+                }
+                for check in result.checks
+            ],
+            "step_id": context.step_id,
+            "summary": result.summary,
+        }
+        event_type = (
+            EventType.COMPLETION_ACCEPTED
+            if result.outcome is CompletionOutcome.ACCEPTED
+            else EventType.COMPLETION_REJECTED
+        )
+        return self._append(context.run_id, event_type, payload)
 
     def load_verification_receipt(self, run_id: str) -> ToolReceipt:
         """Recover durable successful evidence for a run awaiting verification."""
