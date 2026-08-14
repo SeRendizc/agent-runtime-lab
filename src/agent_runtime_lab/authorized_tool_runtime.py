@@ -17,7 +17,7 @@ from agent_runtime_lab.domain.errors import (
     StepBudgetExhaustedError,
 )
 from agent_runtime_lab.domain.events import EventType, ExecutionEvent
-from agent_runtime_lab.domain.replay import replay
+from agent_runtime_lab.domain.replay import replay, replay_tail
 from agent_runtime_lab.domain.state import RunState, RunStatus
 from agent_runtime_lab.domain.tool_effects import ToolIntent, ToolOutcome, ToolReceipt
 from agent_runtime_lab.durable_tool_executor import DurableToolExecutor
@@ -51,6 +51,19 @@ class EventStore(Protocol):
 
     def load(self, run_id: str) -> list[ExecutionEvent]:
         """Load one run in sequence order."""
+
+
+class SnapshotStore(Protocol):
+    """Store validated state accelerators bound to Event prefixes."""
+
+    def save_snapshot(self, state: RunState) -> None:
+        """Persist a replaceable snapshot for one derived state."""
+
+    def load_snapshot(self, run_id: str) -> RunState | None:
+        """Load a snapshot only when its integrity bindings validate."""
+
+    def load_tail(self, run_id: str, start_sequence: int) -> list[ExecutionEvent]:
+        """Load events after the snapshot prefix."""
 
 
 class RuntimeToolOutcome(StrEnum):
@@ -97,6 +110,7 @@ class AuthorizedToolRuntime:
         self,
         *,
         event_store: EventStore,
+        snapshot_store: SnapshotStore | None = None,
         executor: DurableToolExecutor,
         authorization_context: AuthorizationContext,
         gate_evaluator: Callable[[GateProposal, Mapping[str, Any]], GateEvaluation] = evaluate_gate,
@@ -105,7 +119,10 @@ class AuthorizedToolRuntime:
     ) -> None:
         if user_gate_max_attempts < 1:
             raise ValueError("user_gate_max_attempts must be positive")
+        if snapshot_store is not None and snapshot_store is not event_store:
+            raise ValueError("snapshot_store must be the configured event_store instance")
         self._event_store = event_store
+        self._snapshot_store = snapshot_store
         self._executor = executor
         self._authorization_context = authorization_context
         self._gate_evaluator = gate_evaluator
@@ -374,9 +391,25 @@ class AuthorizedToolRuntime:
         )
 
     def load_state(self, run_id: str) -> RunState:
-        """Rebuild current state exclusively from durable events."""
+        """Rebuild state from Events, optionally accelerating a validated prefix."""
 
+        if self._snapshot_store is not None:
+            snapshot = self._snapshot_store.load_snapshot(run_id)
+            if snapshot is not None:
+                return replay_tail(
+                    snapshot,
+                    self._snapshot_store.load_tail(run_id, snapshot.next_sequence),
+                )
         return replay(run_id, self._event_store.load(run_id))
+
+    def create_snapshot(self, run_id: str) -> RunState:
+        """Persist a disposable accelerator derived by full Event replay."""
+
+        if self._snapshot_store is None:
+            raise RuntimeError("snapshot_store is not configured")
+        state = replay(run_id, self._event_store.load(run_id))
+        self._snapshot_store.save_snapshot(state)
+        return state
 
     def build_model_input(self, run_id: str) -> ModelInput:
         """Build the next deterministic Model input from replayed Runtime facts."""

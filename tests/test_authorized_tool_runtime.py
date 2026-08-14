@@ -157,6 +157,7 @@ def make_runtime(
     gate_evaluator: Any = evaluate_gate,
     user_gate_max_attempts: int = 3,
     authorization_context: AuthorizationContext | None = None,
+    enable_snapshots: bool = False,
 ) -> tuple[AuthorizedToolRuntime, SQLiteEventStore, SQLiteToolEffectStore]:
     registry = make_registry()
     event_store = SQLiteEventStore(database_path)
@@ -168,6 +169,7 @@ def make_runtime(
     )
     runtime = AuthorizedToolRuntime(
         event_store=event_store,
+        snapshot_store=event_store if enable_snapshots else None,
         executor=executor,
         authorization_context=(
             authorization_context
@@ -179,6 +181,59 @@ def make_runtime(
         clock=lambda: NOW,
     )
     return runtime, event_store, effect_store
+
+
+def test_runtime_snapshot_replays_new_event_tail(tmp_path: Path) -> None:
+    runtime, event_store, effect_store = make_runtime(
+        database_path=tmp_path / "runtime.db",
+        workspace_root=tmp_path,
+        runner=RecordingToolRunner(),
+        enable_snapshots=True,
+    )
+    initialize_run(event_store)
+    snapshot_state = runtime.create_snapshot("run-1")
+    event_store.append(
+        ExecutionEvent.build(
+            event_id="run-1:2:paused",
+            run_id="run-1",
+            sequence=2,
+            event_type=EventType.RUN_PAUSED,
+            occurred_at=NOW,
+        )
+    )
+
+    recovered = runtime.load_state("run-1")
+
+    assert snapshot_state.status is RunStatus.READY
+    assert recovered.status is RunStatus.PAUSED
+    assert recovered.next_sequence == 3
+
+    event_store.close()
+    effect_store.close()
+
+
+def test_runtime_rejects_snapshot_store_from_a_different_event_log(tmp_path: Path) -> None:
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    snapshot_store = SQLiteEventStore(tmp_path / "snapshots.db")
+    effect_store = SQLiteToolEffectStore(tmp_path / "effects.db")
+    registry = make_registry()
+    executor = DurableToolExecutor(
+        store=effect_store,
+        runner=RecordingToolRunner(),
+        registry=registry,
+    )
+
+    with pytest.raises(ValueError, match="configured event_store"):
+        AuthorizedToolRuntime(
+            event_store=event_store,
+            snapshot_store=snapshot_store,
+            executor=executor,
+            authorization_context=make_authorization_context(tmp_path, registry),
+        )
+
+    event_store.close()
+    snapshot_store.close()
+    effect_store.close()
 
 
 def test_auto_request_is_authorized_then_executed(tmp_path: Path) -> None:
