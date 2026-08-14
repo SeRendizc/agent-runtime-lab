@@ -10,6 +10,7 @@ import pytest
 from agent_runtime_lab.authorized_tool_runtime import (
     AuthorizedToolRuntime,
     RuntimeToolOutcome,
+    SnapshotCheckpoint,
 )
 from agent_runtime_lab.domain.errors import (
     GateReferenceMismatchError,
@@ -62,6 +63,21 @@ class RecordingToolRunner:
         if self.error is not None:
             raise self.error
         return {"ok": True}
+
+
+class SimulatedSnapshotCrash(RuntimeError):
+    pass
+
+
+class CrashAtSnapshotCheckpoint:
+    def __init__(self, target: SnapshotCheckpoint) -> None:
+        self.target = target
+        self.reached: list[SnapshotCheckpoint] = []
+
+    def reach(self, checkpoint: SnapshotCheckpoint) -> None:
+        self.reached.append(checkpoint)
+        if checkpoint is self.target:
+            raise SimulatedSnapshotCrash(f"crashed at {checkpoint.value}")
 
 
 def make_registry() -> ToolRegistry:
@@ -158,6 +174,7 @@ def make_runtime(
     user_gate_max_attempts: int = 3,
     authorization_context: AuthorizationContext | None = None,
     enable_snapshots: bool = False,
+    snapshot_failure_injector: Any = None,
 ) -> tuple[AuthorizedToolRuntime, SQLiteEventStore, SQLiteToolEffectStore]:
     registry = make_registry()
     event_store = SQLiteEventStore(database_path)
@@ -170,6 +187,7 @@ def make_runtime(
     runtime = AuthorizedToolRuntime(
         event_store=event_store,
         snapshot_store=event_store if enable_snapshots else None,
+        snapshot_failure_injector=snapshot_failure_injector,
         executor=executor,
         authorization_context=(
             authorization_context
@@ -234,6 +252,132 @@ def test_runtime_rejects_snapshot_store_from_a_different_event_log(tmp_path: Pat
     event_store.close()
     snapshot_store.close()
     effect_store.close()
+
+
+def test_crash_after_snapshot_persist_keeps_valid_recovery_point(tmp_path: Path) -> None:
+    injector = CrashAtSnapshotCheckpoint(SnapshotCheckpoint.AFTER_SNAPSHOT_PERSISTED)
+    runner = RecordingToolRunner()
+    runtime, event_store, effect_store = make_runtime(
+        database_path=tmp_path / "runtime.db",
+        workspace_root=tmp_path,
+        runner=runner,
+        enable_snapshots=True,
+        snapshot_failure_injector=injector,
+    )
+    initialize_run(event_store)
+
+    with pytest.raises(SimulatedSnapshotCrash, match="after_snapshot_persisted"):
+        runtime.create_snapshot("run-1")
+
+    assert event_store.load_snapshot("run-1") == runtime.load_state("run-1")
+    assert event_store.count("run-1") == 2
+    assert runner.calls == []
+    event_store.close()
+    effect_store.close()
+
+
+def test_crash_before_tail_replay_does_not_consume_or_repeat_effects(tmp_path: Path) -> None:
+    database_path = tmp_path / "runtime.db"
+    runtime, event_store, effect_store = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=RecordingToolRunner(),
+        enable_snapshots=True,
+    )
+    initialize_run(event_store)
+    runtime.create_snapshot("run-1")
+    event_store.append(
+        ExecutionEvent.build(
+            event_id="run-1:2:paused",
+            run_id="run-1",
+            sequence=2,
+            event_type=EventType.RUN_PAUSED,
+            occurred_at=NOW,
+        )
+    )
+    event_store.close()
+    effect_store.close()
+
+    runner = RecordingToolRunner()
+    injector = CrashAtSnapshotCheckpoint(SnapshotCheckpoint.BEFORE_TAIL_REPLAY)
+    crashing, crashing_events, crashing_effects = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+        enable_snapshots=True,
+        snapshot_failure_injector=injector,
+    )
+
+    with pytest.raises(SimulatedSnapshotCrash, match="before_tail_replay"):
+        crashing.load_state("run-1")
+
+    assert crashing_events.count("run-1") == 3
+    assert runner.calls == []
+    crashing_events.close()
+    crashing_effects.close()
+
+    recovered, recovered_events, recovered_effects = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+        enable_snapshots=True,
+    )
+    assert recovered.load_state("run-1").status is RunStatus.PAUSED
+    assert recovered_events.count("run-1") == 3
+    assert runner.calls == []
+    recovered_events.close()
+    recovered_effects.close()
+
+
+def test_crash_before_corrupt_snapshot_fallback_preserves_full_replay(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "runtime.db"
+    runtime, event_store, effect_store = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=RecordingToolRunner(),
+        enable_snapshots=True,
+    )
+    initialize_run(event_store)
+    runtime.create_snapshot("run-1")
+    event_store._connection.execute(  # noqa: SLF001 - corruption fixture
+        "UPDATE run_snapshots SET state_digest = ? WHERE run_id = ?",
+        ("f" * 64, "run-1"),
+    )
+    event_store._connection.commit()  # noqa: SLF001 - corruption fixture
+    event_store.close()
+    effect_store.close()
+
+    runner = RecordingToolRunner()
+    injector = CrashAtSnapshotCheckpoint(SnapshotCheckpoint.BEFORE_FULL_REPLAY)
+    crashing, crashing_events, crashing_effects = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+        enable_snapshots=True,
+        snapshot_failure_injector=injector,
+    )
+
+    with pytest.raises(SimulatedSnapshotCrash, match="before_full_replay"):
+        crashing.load_state("run-1")
+
+    assert crashing_events.count("run-1") == 2
+    assert runner.calls == []
+    crashing_events.close()
+    crashing_effects.close()
+
+    recovered, recovered_events, recovered_effects = make_runtime(
+        database_path=database_path,
+        workspace_root=tmp_path,
+        runner=runner,
+        enable_snapshots=True,
+    )
+    assert recovered.load_state("run-1").status is RunStatus.READY
+    assert recovered_events.count("run-1") == 2
+    assert runner.calls == []
+    recovered_events.close()
+    recovered_effects.close()
 
 
 def test_auto_request_is_authorized_then_executed(tmp_path: Path) -> None:

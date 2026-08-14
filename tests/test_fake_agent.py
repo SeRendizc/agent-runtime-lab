@@ -10,6 +10,8 @@ import pytest
 from agent_runtime_lab.authorized_tool_runtime import (
     AuthorizedToolRuntime,
     RuntimeToolOutcome,
+    SnapshotCheckpoint,
+    SnapshotFailureInjector,
 )
 from agent_runtime_lab.completion import CompletionExpectation, CompletionOutcome
 from agent_runtime_lab.domain.errors import InvalidTransitionError, StepBudgetExhaustedError
@@ -74,6 +76,12 @@ class CrashBeforeRecoveredVerification:
         raise SimulatedCrash("crashed before recovered verification")
 
 
+class CrashBeforeSnapshotTail:
+    def reach(self, checkpoint: SnapshotCheckpoint) -> None:
+        assert checkpoint is SnapshotCheckpoint.BEFORE_TAIL_REPLAY
+        raise SimulatedCrash("crashed before snapshot tail replay")
+
+
 class PathExpectationResolver:
     def __init__(self, digests: dict[str, str]) -> None:
         self._digests = digests
@@ -94,6 +102,8 @@ def make_runtime(
     workspace: Path,
     *,
     write_mode: OwnershipMode = OwnershipMode.PAIR,
+    enable_snapshots: bool = False,
+    snapshot_failure_injector: SnapshotFailureInjector | None = None,
 ) -> tuple[AuthorizedToolRuntime, SQLiteEventStore, SQLiteToolEffectStore]:
     registry = make_restricted_file_registry()
     boundary = WorkspaceBoundary(workspace)
@@ -101,6 +111,8 @@ def make_runtime(
     effects = SQLiteToolEffectStore(tmp_path / "runtime.db")
     runtime = AuthorizedToolRuntime(
         event_store=events,
+        snapshot_store=events if enable_snapshots else None,
+        snapshot_failure_injector=snapshot_failure_injector,
         executor=DurableToolExecutor(
             store=effects,
             runner=RestrictedFileToolRunner(boundary),
@@ -781,7 +793,7 @@ def test_pair_gate_loop_recovers_after_crash_without_repeating_adapter_or_tool(
         ),
         FinalAnswerAction(answer="done"),
     )
-    runtime, events, effects = make_runtime(tmp_path, workspace)
+    runtime, events, effects = make_runtime(tmp_path, workspace, enable_snapshots=True)
     initialize_budgeted_run(events, "run-pair-resume", max_steps=2)
     first_agent = ModelDrivenFakeAgent(
         runtime=runtime,
@@ -801,12 +813,50 @@ def test_pair_gate_loop_recovers_after_crash_without_repeating_adapter_or_tool(
     approved = runtime.resolve_gate(GateResolution.approve(proposal.reference, actor="lucas"))
     assert approved.state.status is RunStatus.VERIFYING
     assert workspace.joinpath("notes.txt").read_text(encoding="utf-8") == content
+    runtime.create_snapshot("run-pair-resume")
     events.close()
     effects.close()
+
+    class ForbiddenAdapter:
+        def next_action(self, context: ModelInput) -> ModelAction:
+            del context
+            raise AssertionError("snapshot recovery must not call the Adapter")
+
+    snapshot_crashing_runtime, snapshot_crashing_events, snapshot_crashing_effects = make_runtime(
+        tmp_path,
+        workspace,
+        enable_snapshots=True,
+        snapshot_failure_injector=CrashBeforeSnapshotTail(),
+    )
+    snapshot_crashing_agent = ModelDrivenFakeAgent(
+        runtime=snapshot_crashing_runtime,
+        verifier=ReceiptVerifier(),
+        adapter=ForbiddenAdapter(),
+        run_id="run-pair-resume",
+    )
+    expectation = PathExpectationResolver(
+        {"notes.txt": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+    )
+
+    with pytest.raises(SimulatedCrash, match="snapshot tail replay"):
+        snapshot_crashing_agent.resume_loop(
+            tool_expectations=expectation,
+            completion_expectation=CompletionExpectation(expected_answer="done"),
+        )
+
+    snapshot_event_types = [
+        event.event_type for event in snapshot_crashing_events.load("run-pair-resume")
+    ]
+    assert snapshot_event_types.count(EventType.TOOL_REQUESTED) == 1
+    assert snapshot_event_types.count(EventType.TOOL_STARTED) == 1
+    assert snapshot_event_types.count(EventType.TOOL_SUCCEEDED) == 1
+    snapshot_crashing_events.close()
+    snapshot_crashing_effects.close()
 
     crashing_runtime, crashing_events, crashing_effects = make_runtime(
         tmp_path,
         workspace,
+        enable_snapshots=True,
     )
     crashing_agent = ModelDrivenFakeAgent(
         runtime=crashing_runtime,
@@ -815,10 +865,6 @@ def test_pair_gate_loop_recovers_after_crash_without_repeating_adapter_or_tool(
         run_id="run-pair-resume",
         loop_failure_injector=CrashBeforeRecoveredVerification(),
     )
-    expectation = PathExpectationResolver(
-        {"notes.txt": hashlib.sha256(content.encode("utf-8")).hexdigest()}
-    )
-
     with pytest.raises(SimulatedCrash, match="recovered verification"):
         crashing_agent.resume_loop(
             tool_expectations=expectation,
@@ -840,6 +886,7 @@ def test_pair_gate_loop_recovers_after_crash_without_repeating_adapter_or_tool(
     recovered_runtime, recovered_events, recovered_effects = make_runtime(
         tmp_path,
         workspace,
+        enable_snapshots=True,
     )
     adapter = FinalOnlyAdapter()
     recovered_agent = ModelDrivenFakeAgent(

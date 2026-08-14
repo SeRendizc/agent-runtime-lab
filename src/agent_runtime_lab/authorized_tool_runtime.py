@@ -66,6 +66,21 @@ class SnapshotStore(Protocol):
         """Load events after the snapshot prefix."""
 
 
+class SnapshotCheckpoint(StrEnum):
+    """Crash boundaries around disposable Snapshot recovery."""
+
+    AFTER_SNAPSHOT_PERSISTED = "after_snapshot_persisted"
+    BEFORE_TAIL_REPLAY = "before_tail_replay"
+    BEFORE_FULL_REPLAY = "before_full_replay"
+
+
+class SnapshotFailureInjector(Protocol):
+    """Observe Snapshot recovery boundaries and optionally crash."""
+
+    def reach(self, checkpoint: SnapshotCheckpoint) -> None:
+        """Handle one Snapshot checkpoint."""
+
+
 class RuntimeToolOutcome(StrEnum):
     """Caller-facing outcome of one orchestration step."""
 
@@ -111,6 +126,7 @@ class AuthorizedToolRuntime:
         *,
         event_store: EventStore,
         snapshot_store: SnapshotStore | None = None,
+        snapshot_failure_injector: SnapshotFailureInjector | None = None,
         executor: DurableToolExecutor,
         authorization_context: AuthorizationContext,
         gate_evaluator: Callable[[GateProposal, Mapping[str, Any]], GateEvaluation] = evaluate_gate,
@@ -121,8 +137,11 @@ class AuthorizedToolRuntime:
             raise ValueError("user_gate_max_attempts must be positive")
         if snapshot_store is not None and snapshot_store is not event_store:
             raise ValueError("snapshot_store must be the configured event_store instance")
+        if snapshot_failure_injector is not None and snapshot_store is None:
+            raise ValueError("snapshot failure injection requires snapshot_store")
         self._event_store = event_store
         self._snapshot_store = snapshot_store
+        self._snapshot_failure_injector = snapshot_failure_injector
         self._executor = executor
         self._authorization_context = authorization_context
         self._gate_evaluator = gate_evaluator
@@ -396,10 +415,12 @@ class AuthorizedToolRuntime:
         if self._snapshot_store is not None:
             snapshot = self._snapshot_store.load_snapshot(run_id)
             if snapshot is not None:
+                self._reach_snapshot_checkpoint(SnapshotCheckpoint.BEFORE_TAIL_REPLAY)
                 return replay_tail(
                     snapshot,
                     self._snapshot_store.load_tail(run_id, snapshot.next_sequence),
                 )
+            self._reach_snapshot_checkpoint(SnapshotCheckpoint.BEFORE_FULL_REPLAY)
         return replay(run_id, self._event_store.load(run_id))
 
     def create_snapshot(self, run_id: str) -> RunState:
@@ -409,7 +430,12 @@ class AuthorizedToolRuntime:
             raise RuntimeError("snapshot_store is not configured")
         state = replay(run_id, self._event_store.load(run_id))
         self._snapshot_store.save_snapshot(state)
+        self._reach_snapshot_checkpoint(SnapshotCheckpoint.AFTER_SNAPSHOT_PERSISTED)
         return state
+
+    def _reach_snapshot_checkpoint(self, checkpoint: SnapshotCheckpoint) -> None:
+        if self._snapshot_failure_injector is not None:
+            self._snapshot_failure_injector.reach(checkpoint)
 
     def build_model_input(self, run_id: str) -> ModelInput:
         """Build the next deterministic Model input from replayed Runtime facts."""
