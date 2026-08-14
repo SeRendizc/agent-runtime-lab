@@ -111,6 +111,8 @@ class ModelLoopCheckpoint(StrEnum):
     """Crash boundary exposed by the durable model loop."""
 
     BEFORE_RECOVERED_VERIFICATION = "before_recovered_verification"
+    AFTER_MODEL_ACTION_RETURNED = "after_model_action_returned"
+    AFTER_MODEL_ACTION_PERSISTED = "after_model_action_persisted"
 
 
 class ModelLoopFailureInjector(Protocol):
@@ -265,8 +267,15 @@ class ModelDrivenFakeAgent:
         """Run bounded model Actions until terminal state or durable Gate pause."""
 
         initial = self._runtime.load_state(self._run_id)
-        if initial.status is not RunStatus.READY:
-            raise InvalidTransitionError(f"model loop requires ready, got {initial.status.value}")
+        if initial.status not in {
+            RunStatus.READY,
+            RunStatus.MODEL_PENDING,
+            RunStatus.ACTION_PENDING,
+        }:
+            raise InvalidTransitionError(
+                "model loop requires ready, model_pending, or action_pending, "
+                f"got {initial.status.value}"
+            )
         if initial.max_steps is None:
             raise InvalidTransitionError(
                 "bounded model loop requires max_steps persisted at run creation"
@@ -344,24 +353,11 @@ class ModelDrivenFakeAgent:
         """Continue only from READY using replayed turn and budget facts."""
 
         while True:
-            try:
-                context = self._runtime.build_model_input(self._run_id)
-            except StepBudgetExhaustedError:
-                return self._loop_result(
-                    ModelLoopOutcome.FAILED,
-                    actions,
-                    tool_results,
-                    verifications,
-                    completions,
-                    recovered_receipts,
-                )
-
-            try:
-                proposed = request_model_action(self._adapter, context)
-            except Exception:
+            current = self._runtime.load_state(self._run_id)
+            if current.status is RunStatus.MODEL_PENDING:
                 self._runtime.record_model_action_failure(
                     self._run_id,
-                    "model adapter failed to produce a valid bounded action",
+                    "model adapter outcome is unknown after interruption",
                 )
                 return self._loop_result(
                     ModelLoopOutcome.FAILED,
@@ -371,6 +367,53 @@ class ModelDrivenFakeAgent:
                     completions,
                     recovered_receipts,
                 )
+            if current.status is RunStatus.ACTION_PENDING:
+                pending = self._runtime.load_pending_model_action(self._run_id)
+                context = pending.context
+                proposed = pending.action
+                model_action_event_id = pending.event_id
+            else:
+                try:
+                    context = self._runtime.build_model_input(self._run_id)
+                except StepBudgetExhaustedError:
+                    return self._loop_result(
+                        ModelLoopOutcome.FAILED,
+                        actions,
+                        tool_results,
+                        verifications,
+                        completions,
+                        recovered_receipts,
+                    )
+                invocation_id = self._runtime.begin_model_action(context)
+                try:
+                    proposed = request_model_action(self._adapter, context)
+                except Exception:
+                    self._runtime.record_model_action_failure(
+                        self._run_id,
+                        "model adapter failed to produce a valid bounded action",
+                    )
+                    return self._loop_result(
+                        ModelLoopOutcome.FAILED,
+                        actions,
+                        tool_results,
+                        verifications,
+                        completions,
+                        recovered_receipts,
+                    )
+                if self._loop_failure_injector is not None:
+                    self._loop_failure_injector.reach(
+                        ModelLoopCheckpoint.AFTER_MODEL_ACTION_RETURNED
+                    )
+                pending = self._runtime.persist_model_action(
+                    context,
+                    invocation_id,
+                    proposed,
+                )
+                model_action_event_id = pending.event_id
+                if self._loop_failure_injector is not None:
+                    self._loop_failure_injector.reach(
+                        ModelLoopCheckpoint.AFTER_MODEL_ACTION_PERSISTED
+                    )
             actions.append(proposed)
 
             if isinstance(proposed, FinalAnswerAction):
@@ -392,7 +435,13 @@ class ModelDrivenFakeAgent:
                     )
                 continue
 
-            tool_result = self._runtime.submit(tool_request_from_action(context, proposed))
+            tool_result = self._runtime.submit(
+                tool_request_from_action(
+                    context,
+                    proposed,
+                    model_action_event_id=model_action_event_id,
+                )
+            )
             tool_results.append(tool_result)
             if tool_result.outcome is not RuntimeToolOutcome.EXECUTED:
                 outcome = (

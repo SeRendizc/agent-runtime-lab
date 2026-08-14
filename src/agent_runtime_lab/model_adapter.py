@@ -191,6 +191,8 @@ def request_model_action(adapter: ModelAdapter, context: ModelInput) -> ModelAct
 def tool_request_from_action(
     context: ModelInput,
     action: ModelAction,
+    *,
+    model_action_event_id: str | None = None,
 ) -> ToolRequest:
     """Compile a tool proposal using trusted Runtime run and step identity."""
 
@@ -206,4 +208,5 @@ def tool_request_from_action(
         tool_call_id=action.tool_call_id,
         tool_name=action.tool_name,
         arguments_json=action.arguments_json,
+        model_action_event_id=model_action_event_id,
     )

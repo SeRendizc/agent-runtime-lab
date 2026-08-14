@@ -21,7 +21,12 @@ from agent_runtime_lab.domain.replay import replay, replay_tail
 from agent_runtime_lab.domain.state import RunState, RunStatus
 from agent_runtime_lab.domain.tool_effects import ToolIntent, ToolOutcome, ToolReceipt
 from agent_runtime_lab.durable_tool_executor import DurableToolExecutor
-from agent_runtime_lab.model_adapter import FinalAnswerAction, ModelInput, ToolCallAction
+from agent_runtime_lab.model_adapter import (
+    FinalAnswerAction,
+    ModelAction,
+    ModelInput,
+    ToolCallAction,
+)
 from agent_runtime_lab.ownership.authorization import (
     AuthorizationContext,
     AuthorizationDecision,
@@ -114,6 +119,16 @@ class ModelToolRecovery:
     receipt: ToolReceipt
 
 
+@dataclass(frozen=True, slots=True)
+class DurableModelAction:
+    """One exact Adapter Action persisted before Runtime dispatch."""
+
+    event_id: str
+    invocation_id: str
+    context: ModelInput
+    action: ModelAction
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -151,15 +166,18 @@ class AuthorizedToolRuntime:
     def submit(self, request: ToolRequest) -> RuntimeToolResult:
         """Authorize a concrete request, then deny, pause, or execute it."""
 
+        request_payload: dict[str, Any] = {
+            "arguments_json": request.arguments_json,
+            "step_id": request.step_id,
+            "tool_call_id": request.tool_call_id,
+            "tool_name": request.tool_name,
+        }
+        if request.model_action_event_id is not None:
+            request_payload["model_action_event_id"] = request.model_action_event_id
         self._append(
             request.run_id,
             EventType.TOOL_REQUESTED,
-            {
-                "arguments_json": request.arguments_json,
-                "step_id": request.step_id,
-                "tool_call_id": request.tool_call_id,
-                "tool_name": request.tool_name,
-            },
+            request_payload,
         )
         decision = authorize(request, self._authorization_context)
 
@@ -461,6 +479,117 @@ class AuthorizedToolRuntime:
             observation=self._load_step_observation(run_id),
         )
 
+    def begin_model_action(self, context: ModelInput) -> str:
+        """Persist Adapter invocation intent before crossing the model boundary."""
+
+        state = self.load_state(context.run_id)
+        if (
+            state.status is not RunStatus.READY
+            or context.state_status is not RunStatus.READY
+            or context.turn_index != state.turn_index
+            or context.step_id != f"step-{state.turn_index + 1}"
+        ):
+            raise InvalidTransitionError("model action context is stale or untrusted")
+        invocation_id = f"{context.run_id}:{context.step_id}:model-invocation"
+        self._append(
+            context.run_id,
+            EventType.MODEL_ACTION_REQUESTED,
+            {
+                "invocation_id": invocation_id,
+                "observation_json": context.observation_json,
+                "step_id": context.step_id,
+                "turn_index": context.turn_index,
+            },
+        )
+        return invocation_id
+
+    def persist_model_action(
+        self,
+        context: ModelInput,
+        invocation_id: str,
+        action: ModelAction,
+    ) -> DurableModelAction:
+        """Persist one validated Adapter Action before dispatching it."""
+
+        state = self.load_state(context.run_id)
+        if (
+            state.status is not RunStatus.MODEL_PENDING
+            or state.active_model_invocation_id != invocation_id
+            or state.active_step_id != context.step_id
+            or state.turn_index != context.turn_index
+        ):
+            raise InvalidTransitionError("model action does not match the active invocation")
+        payload: dict[str, Any] = {
+            "invocation_id": invocation_id,
+            "step_id": context.step_id,
+            "turn_index": context.turn_index,
+        }
+        if isinstance(action, ToolCallAction):
+            payload.update(
+                {
+                    "action_type": "tool_call",
+                    "arguments_json": action.arguments_json,
+                    "tool_call_id": action.tool_call_id,
+                    "tool_name": action.tool_name,
+                }
+            )
+        elif isinstance(action, FinalAnswerAction):
+            payload.update({"action_type": "final_answer", "answer": action.answer})
+        else:
+            raise TypeError("unsupported model action")
+        state = self._append(context.run_id, EventType.MODEL_ACTION_PROPOSED, payload)
+        if state.active_model_action_event_id is None:
+            raise InvalidTransitionError("persisted model action has no active event identity")
+        return self.load_pending_model_action(context.run_id)
+
+    def load_pending_model_action(self, run_id: str) -> DurableModelAction:
+        """Reconstruct the exact unconsumed Action without calling the Adapter."""
+
+        state = self.load_state(run_id)
+        if (
+            state.status is not RunStatus.ACTION_PENDING
+            or state.active_model_action_event_id is None
+            or state.active_model_invocation_id is None
+            or state.active_step_id is None
+        ):
+            raise InvalidTransitionError("run has no durable pending model action")
+        requested: ExecutionEvent | None = None
+        proposed: ExecutionEvent | None = None
+        for event in self._event_store.load(run_id):
+            if (
+                event.event_type is EventType.MODEL_ACTION_REQUESTED
+                and event.payload.get("invocation_id") == state.active_model_invocation_id
+            ):
+                requested = event
+            if event.event_id == state.active_model_action_event_id:
+                proposed = event
+        if requested is None or proposed is None:
+            raise InvalidTransitionError("durable model action evidence is incomplete")
+        context = ModelInput(
+            run_id=run_id,
+            step_id=self._payload_text(requested.payload, "step_id"),
+            turn_index=requested.payload.get("turn_index"),
+            state_status=RunStatus.READY,
+            observation_json=self._payload_text(requested.payload, "observation_json"),
+        )
+        action_type = self._payload_text(proposed.payload, "action_type")
+        if action_type == "tool_call":
+            action: ModelAction = ToolCallAction(
+                tool_call_id=self._payload_text(proposed.payload, "tool_call_id"),
+                tool_name=self._payload_text(proposed.payload, "tool_name"),
+                arguments_json=self._payload_text(proposed.payload, "arguments_json"),
+            )
+        elif action_type == "final_answer":
+            action = FinalAnswerAction(answer=self._payload_text(proposed.payload, "answer"))
+        else:
+            raise InvalidTransitionError("durable model action type is invalid")
+        return DurableModelAction(
+            event_id=proposed.event_id,
+            invocation_id=state.active_model_invocation_id,
+            context=context,
+            action=action,
+        )
+
     def record_model_action_failure(self, run_id: str, reason: str) -> RunState:
         """Fail a ready Run with a sanitized model-boundary reason."""
 
@@ -537,9 +666,9 @@ class AuthorizedToolRuntime:
         if not isinstance(result, CompletionResult):
             raise TypeError("completion verifier must return CompletionResult")
         state = self.load_state(context.run_id)
-        if state.status is not RunStatus.READY:
+        if state.status not in {RunStatus.READY, RunStatus.ACTION_PENDING}:
             raise InvalidTransitionError(
-                f"completion recording requires ready, got {state.status.value}"
+                f"completion recording requires ready or action_pending, got {state.status.value}"
             )
         if (
             context.state_status is not RunStatus.READY
@@ -551,6 +680,11 @@ class AuthorizedToolRuntime:
         answer_sha256 = hashlib.sha256(action.answer.encode("utf-8")).hexdigest()
         if result.answer_sha256 != answer_sha256:
             raise InvalidTransitionError("completion evidence does not match proposed answer")
+        model_action_event_id = state.active_model_action_event_id
+        if state.status is RunStatus.ACTION_PENDING:
+            pending = self.load_pending_model_action(context.run_id)
+            if pending.context != context or pending.action != action:
+                raise InvalidTransitionError("completion does not match durable model action")
         payload = {
             "answer": action.answer,
             "answer_sha256": answer_sha256,
@@ -565,6 +699,8 @@ class AuthorizedToolRuntime:
             "step_id": context.step_id,
             "summary": result.summary,
         }
+        if model_action_event_id is not None:
+            payload["model_action_event_id"] = model_action_event_id
         event_type = (
             EventType.COMPLETION_ACCEPTED
             if result.outcome is CompletionOutcome.ACCEPTED
@@ -730,6 +866,7 @@ class AuthorizedToolRuntime:
                 tool_call_id=tool_call_id,
                 tool_name=self._payload_text(event.payload, "tool_name"),
                 arguments_json=self._payload_text(event.payload, "arguments_json"),
+                model_action_event_id=event.payload.get("model_action_event_id"),
             )
         raise GateReferenceMismatchError("active gate has no matching persisted tool request")
 

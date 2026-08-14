@@ -51,12 +51,15 @@ class ToolRequest:
     tool_call_id: str
     tool_name: str
     arguments_json: str
+    model_action_event_id: str | None = None
 
     def __post_init__(self) -> None:
         _required_text(self.run_id, "run_id")
         _required_text(self.step_id, "step_id")
         _required_text(self.tool_call_id, "tool_call_id")
         _required_text(self.tool_name, "tool_name")
+        if self.model_action_event_id is not None:
+            _required_text(self.model_action_event_id, "model_action_event_id")
 
         try:
             arguments = json.loads(self.arguments_json)
@@ -77,6 +80,7 @@ class ToolRequest:
         tool_call_id: str,
         tool_name: str,
         arguments: Mapping[str, Any] | None = None,
+        model_action_event_id: str | None = None,
     ) -> ToolRequest:
         """Build a request with canonical immutable arguments."""
 
@@ -86,6 +90,7 @@ class ToolRequest:
             tool_call_id=tool_call_id,
             tool_name=tool_name,
             arguments_json=_canonical_json(arguments or {}),
+            model_action_event_id=model_action_event_id,
         )
 
     @property

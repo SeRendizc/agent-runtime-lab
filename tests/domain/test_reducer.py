@@ -179,6 +179,99 @@ def test_model_action_failure_terminates_ready_run() -> None:
     assert state.failure_reason == "adapter returned invalid output"
 
 
+def test_durable_model_action_binds_invocation_step_and_completion() -> None:
+    requested = reduce(
+        budgeted_ready_state(1),
+        event(
+            2,
+            EventType.MODEL_ACTION_REQUESTED,
+            payload={
+                "invocation_id": "invoke-1",
+                "observation_json": "{}",
+                "step_id": "step-1",
+                "turn_index": 0,
+            },
+        ),
+    )
+    proposed = reduce(
+        requested,
+        event(
+            3,
+            EventType.MODEL_ACTION_PROPOSED,
+            payload={
+                "action_type": "final_answer",
+                "answer": "done",
+                "invocation_id": "invoke-1",
+                "step_id": "step-1",
+                "turn_index": 0,
+            },
+        ),
+    )
+    completed = reduce(
+        proposed,
+        event(
+            4,
+            EventType.COMPLETION_ACCEPTED,
+            payload={
+                "answer_sha256": "digest",
+                "model_action_event_id": "evt-3",
+                "step_id": "step-1",
+                "summary": "accepted",
+            },
+        ),
+    )
+
+    assert requested.status is RunStatus.MODEL_PENDING
+    assert proposed.status is RunStatus.ACTION_PENDING
+    assert proposed.active_model_action_event_id == "evt-3"
+    assert completed.status is RunStatus.COMPLETED
+    assert completed.active_model_invocation_id is None
+    assert completed.active_model_action_event_id is None
+
+
+def test_durable_model_action_rejects_mismatched_dispatch_reference() -> None:
+    state = apply(
+        budgeted_ready_state(1),
+        event(
+            2,
+            EventType.MODEL_ACTION_REQUESTED,
+            payload={
+                "invocation_id": "invoke-1",
+                "observation_json": "{}",
+                "step_id": "step-1",
+                "turn_index": 0,
+            },
+        ),
+        event(
+            3,
+            EventType.MODEL_ACTION_PROPOSED,
+            payload={
+                "action_type": "tool_call",
+                "arguments_json": "{}",
+                "invocation_id": "invoke-1",
+                "step_id": "step-1",
+                "tool_call_id": "tool-1",
+                "tool_name": "read_file",
+                "turn_index": 0,
+            },
+        ),
+    )
+
+    with pytest.raises(InvalidTransitionError, match="active model action"):
+        reduce(
+            state,
+            event(
+                4,
+                EventType.TOOL_REQUESTED,
+                payload={
+                    "model_action_event_id": "different-event",
+                    "step_id": "step-1",
+                    "tool_call_id": "tool-1",
+                },
+            ),
+        )
+
+
 def test_completion_acceptance_is_the_only_new_model_path_to_completed() -> None:
     state = reduce(
         budgeted_ready_state(1),

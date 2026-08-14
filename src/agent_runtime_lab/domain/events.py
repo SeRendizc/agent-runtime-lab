@@ -20,6 +20,8 @@ class EventType(StrEnum):
     RUN_RESUMED = "run.resumed"
     RUN_CANCELLED = "run.cancelled"
     RUN_STEP_BUDGET_EXHAUSTED = "run.step_budget_exhausted"
+    MODEL_ACTION_REQUESTED = "model.action_requested"
+    MODEL_ACTION_PROPOSED = "model.action_proposed"
     MODEL_ACTION_FAILED = "model.action_failed"
     COMPLETION_ACCEPTED = "completion.accepted"
     COMPLETION_REJECTED = "completion.rejected"

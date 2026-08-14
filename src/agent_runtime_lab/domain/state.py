@@ -12,6 +12,8 @@ class RunStatus(StrEnum):
     NEW = "new"
     CREATED = "created"
     READY = "ready"
+    MODEL_PENDING = "model_pending"
+    ACTION_PENDING = "action_pending"
     TOOL_PENDING = "tool_pending"
     AWAITING_GATE = "awaiting_gate"
     TOOL_READY = "tool_ready"
@@ -34,6 +36,8 @@ class RunState:
     turn_index: int = 0
     max_steps: int | None = None
     active_step_id: str | None = None
+    active_model_invocation_id: str | None = None
+    active_model_action_event_id: str | None = None
     active_tool_call_id: str | None = None
     active_gate_proposal_digest: str | None = None
     active_gate_revision: int | None = None

@@ -53,6 +53,14 @@ def _expect_model_budget_available(state: RunState, event: ExecutionEvent) -> No
         )
 
 
+def _expect_pending_model_action(state: RunState, event: ExecutionEvent) -> None:
+    action_event_id = _required_text(event, "model_action_event_id")
+    if action_event_id != state.active_model_action_event_id:
+        raise InvalidTransitionError(
+            f"{event.event_type.value} does not match the active model action"
+        )
+
+
 def _expect_active_gate(state: RunState, event: ExecutionEvent) -> None:
     _expect_active_tool(state, event)
     proposal_digest = _required_text(event, "proposal_digest")
@@ -74,6 +82,8 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             state,
             status=RunStatus.CANCELLED,
             active_step_id=None,
+            active_model_invocation_id=None,
+            active_model_action_event_id=None,
             active_tool_call_id=None,
             active_gate_proposal_digest=None,
             active_gate_revision=None,
@@ -124,11 +134,60 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             failure_reason=f"step budget exhausted: {completed_steps}/{max_steps} steps consumed",
         )
 
-    if event.event_type is EventType.MODEL_ACTION_FAILED:
+    if event.event_type is EventType.MODEL_ACTION_REQUESTED:
         _expect(state, RunStatus.READY, event)
+        _expect_model_budget_available(state, event)
+        step_id = _required_text(event, "step_id")
+        if step_id != f"step-{state.turn_index + 1}":
+            raise InvalidTransitionError("model.action_requested does not match the next step")
+        turn_index = event.payload.get("turn_index")
+        if turn_index != state.turn_index:
+            raise InvalidTransitionError("model.action_requested has a stale turn index")
+        _required_text(event, "observation_json")
+        return replace(
+            state,
+            status=RunStatus.MODEL_PENDING,
+            active_step_id=step_id,
+            active_model_invocation_id=_required_text(event, "invocation_id"),
+        )
+
+    if event.event_type is EventType.MODEL_ACTION_PROPOSED:
+        _expect(state, RunStatus.MODEL_PENDING, event)
+        invocation_id = _required_text(event, "invocation_id")
+        if invocation_id != state.active_model_invocation_id:
+            raise InvalidTransitionError(
+                "model.action_proposed does not match the active invocation"
+            )
+        if _required_text(event, "step_id") != state.active_step_id:
+            raise InvalidTransitionError("model.action_proposed does not match the active step")
+        if event.payload.get("turn_index") != state.turn_index:
+            raise InvalidTransitionError("model.action_proposed has a stale turn index")
+        action_type = _required_text(event, "action_type")
+        if action_type == "tool_call":
+            _required_text(event, "tool_call_id")
+            _required_text(event, "tool_name")
+            _required_text(event, "arguments_json")
+        elif action_type == "final_answer":
+            _required_text(event, "answer")
+        else:
+            raise InvalidTransitionError("model.action_proposed requires tool_call or final_answer")
+        return replace(
+            state,
+            status=RunStatus.ACTION_PENDING,
+            active_model_action_event_id=event.event_id,
+        )
+
+    if event.event_type is EventType.MODEL_ACTION_FAILED:
+        if state.status not in {RunStatus.READY, RunStatus.MODEL_PENDING}:
+            raise InvalidTransitionError(
+                f"model.action_failed requires ready or model_pending, got {state.status.value}"
+            )
         return replace(
             state,
             status=RunStatus.FAILED,
+            active_step_id=None,
+            active_model_invocation_id=None,
+            active_model_action_event_id=None,
             failure_reason=_required_text(event, "reason"),
         )
 
@@ -136,7 +195,10 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
         EventType.COMPLETION_ACCEPTED,
         EventType.COMPLETION_REJECTED,
     }:
-        _expect(state, RunStatus.READY, event)
+        if state.status is RunStatus.ACTION_PENDING:
+            _expect_pending_model_action(state, event)
+        else:
+            _expect(state, RunStatus.READY, event)
         _expect_model_budget_available(state, event)
         step_id = _required_text(event, "step_id")
         if step_id != f"step-{state.turn_index + 1}":
@@ -150,11 +212,24 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
                 state,
                 status=RunStatus.COMPLETED,
                 turn_index=state.turn_index + 1,
+                active_step_id=None,
+                active_model_invocation_id=None,
+                active_model_action_event_id=None,
             )
-        return replace(state, turn_index=state.turn_index + 1)
+        return replace(
+            state,
+            status=RunStatus.READY,
+            turn_index=state.turn_index + 1,
+            active_step_id=None,
+            active_model_invocation_id=None,
+            active_model_action_event_id=None,
+        )
 
     if event.event_type is EventType.TOOL_REQUESTED:
-        _expect(state, RunStatus.READY, event)
+        if state.status is RunStatus.ACTION_PENDING:
+            _expect_pending_model_action(state, event)
+        else:
+            _expect(state, RunStatus.READY, event)
         step_id = event.payload.get("step_id")
         if step_id is not None and (not isinstance(step_id, str) or not step_id):
             raise InvalidTransitionError(
@@ -166,6 +241,8 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             state,
             status=RunStatus.TOOL_PENDING,
             active_step_id=step_id,
+            active_model_invocation_id=None,
+            active_model_action_event_id=None,
             active_tool_call_id=_required_text(event, "tool_call_id"),
         )
 

@@ -8,7 +8,7 @@ from typing import Any
 
 from agent_runtime_lab.domain.state import RunState, RunStatus
 
-SNAPSHOT_SCHEMA_VERSION = 1
+SNAPSHOT_SCHEMA_VERSION = 2
 
 
 def encode_state(state: RunState) -> str:
@@ -20,6 +20,8 @@ def encode_state(state: RunState) -> str:
         "active_gate_mode": state.active_gate_mode,
         "active_gate_proposal_digest": state.active_gate_proposal_digest,
         "active_gate_revision": state.active_gate_revision,
+        "active_model_action_event_id": state.active_model_action_event_id,
+        "active_model_invocation_id": state.active_model_invocation_id,
         "active_step_id": state.active_step_id,
         "active_tool_call_id": state.active_tool_call_id,
         "applied_event_fingerprints": state.applied_event_fingerprints,
@@ -40,7 +42,7 @@ def encode_state(state: RunState) -> str:
 
 
 def decode_state(state_json: str) -> RunState:
-    """Decode a schema-v1 state, rejecting missing or unexpected fields."""
+    """Decode a schema-v2 state, rejecting missing or unexpected fields."""
 
     payload: Any = json.loads(state_json)
     if not isinstance(payload, dict):
@@ -52,6 +54,8 @@ def decode_state(state_json: str) -> RunState:
         "active_gate_mode",
         "active_gate_proposal_digest",
         "active_gate_revision",
+        "active_model_action_event_id",
+        "active_model_invocation_id",
         "active_step_id",
         "active_tool_call_id",
         "applied_event_fingerprints",
@@ -81,6 +85,8 @@ def decode_state(state_json: str) -> RunState:
         turn_index=payload["turn_index"],
         max_steps=payload["max_steps"],
         active_step_id=payload["active_step_id"],
+        active_model_invocation_id=payload["active_model_invocation_id"],
+        active_model_action_event_id=payload["active_model_action_event_id"],
         active_tool_call_id=payload["active_tool_call_id"],
         active_gate_proposal_digest=payload["active_gate_proposal_digest"],
         active_gate_revision=payload["active_gate_revision"],

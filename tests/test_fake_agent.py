@@ -82,6 +82,20 @@ class CrashBeforeSnapshotTail:
         raise SimulatedCrash("crashed before snapshot tail replay")
 
 
+class CrashAfterModelActionReturned:
+    def reach(self, checkpoint: ModelLoopCheckpoint) -> None:
+        assert checkpoint is ModelLoopCheckpoint.AFTER_MODEL_ACTION_RETURNED
+        raise SimulatedCrash("crashed after model action returned")
+
+
+class CrashAfterModelActionPersisted:
+    def reach(self, checkpoint: ModelLoopCheckpoint) -> None:
+        if checkpoint is ModelLoopCheckpoint.AFTER_MODEL_ACTION_RETURNED:
+            return
+        assert checkpoint is ModelLoopCheckpoint.AFTER_MODEL_ACTION_PERSISTED
+        raise SimulatedCrash("crashed after model action persisted")
+
+
 class PathExpectationResolver:
     def __init__(self, digests: dict[str, str]) -> None:
         self._digests = digests
@@ -581,13 +595,217 @@ def test_bounded_loop_runs_tool_rejects_completion_then_completes(tmp_path: Path
         CompletionOutcome.ACCEPTED,
     ]
     event_types = [item.event_type for item in events.load("run-loop")]
-    assert event_types[-3:] == [
-        EventType.VERIFICATION_SUCCEEDED,
+    assert event_types[-6:] == [
+        EventType.MODEL_ACTION_REQUESTED,
+        EventType.MODEL_ACTION_PROPOSED,
         EventType.COMPLETION_REJECTED,
+        EventType.MODEL_ACTION_REQUESTED,
+        EventType.MODEL_ACTION_PROPOSED,
         EventType.COMPLETION_ACCEPTED,
     ]
     events.close()
     effects.close()
+
+
+def test_model_action_unknown_window_fails_without_recalling_adapter(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class OneCallAdapter:
+        calls = 0
+
+        def next_action(self, context: ModelInput) -> ModelAction:
+            self.calls += 1
+            assert context.turn_index == 0
+            return FinalAnswerAction(answer="done")
+
+    adapter = OneCallAdapter()
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-action-unknown", max_steps=1)
+    crashing_agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=adapter,
+        run_id="run-action-unknown",
+        loop_failure_injector=CrashAfterModelActionReturned(),
+    )
+
+    with pytest.raises(SimulatedCrash, match="action returned"):
+        crashing_agent.run_loop(
+            tool_expectations=PathExpectationResolver({}),
+            completion_expectation=CompletionExpectation(
+                expected_answer="done",
+                require_verified_observation=False,
+            ),
+        )
+
+    assert adapter.calls == 1
+    assert runtime.load_state("run-action-unknown").status is RunStatus.MODEL_PENDING
+    assert [event.event_type for event in events.load("run-action-unknown")][-1] is (
+        EventType.MODEL_ACTION_REQUESTED
+    )
+    events.close()
+    effects.close()
+
+    class ForbiddenAdapter:
+        def next_action(self, context: ModelInput) -> ModelAction:
+            del context
+            raise AssertionError("unknown Adapter outcome must not be retried")
+
+    recovered_runtime, recovered_events, recovered_effects = make_runtime(tmp_path, workspace)
+    recovered_agent = ModelDrivenFakeAgent(
+        runtime=recovered_runtime,
+        verifier=ReceiptVerifier(),
+        adapter=ForbiddenAdapter(),
+        run_id="run-action-unknown",
+    )
+    result = recovered_agent.run_loop(
+        tool_expectations=PathExpectationResolver({}),
+        completion_expectation=CompletionExpectation(
+            expected_answer="done",
+            require_verified_observation=False,
+        ),
+    )
+
+    assert result.outcome is ModelLoopOutcome.FAILED
+    assert result.state.status is RunStatus.FAILED
+    assert result.state.failure_reason == "model adapter outcome is unknown after interruption"
+    assert recovered_events.load("run-action-unknown")[-1].event_type is (
+        EventType.MODEL_ACTION_FAILED
+    )
+    recovered_events.close()
+    recovered_effects.close()
+
+
+def test_persisted_model_action_resumes_without_recalling_adapter(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class OneCallAdapter:
+        calls = 0
+
+        def next_action(self, context: ModelInput) -> ModelAction:
+            self.calls += 1
+            return FinalAnswerAction(answer="done")
+
+    adapter = OneCallAdapter()
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-action-durable", max_steps=1)
+    crashing_agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=adapter,
+        run_id="run-action-durable",
+        loop_failure_injector=CrashAfterModelActionPersisted(),
+    )
+
+    with pytest.raises(SimulatedCrash, match="action persisted"):
+        crashing_agent.run_loop(
+            tool_expectations=PathExpectationResolver({}),
+            completion_expectation=CompletionExpectation(
+                expected_answer="done",
+                require_verified_observation=False,
+            ),
+        )
+
+    assert adapter.calls == 1
+    assert runtime.load_state("run-action-durable").status is RunStatus.ACTION_PENDING
+    events.close()
+    effects.close()
+
+    class ForbiddenAdapter:
+        calls = 0
+
+        def next_action(self, context: ModelInput) -> ModelAction:
+            self.calls += 1
+            raise AssertionError("durable Action must be replayed")
+
+    forbidden = ForbiddenAdapter()
+    recovered_runtime, recovered_events, recovered_effects = make_runtime(tmp_path, workspace)
+    recovered_agent = ModelDrivenFakeAgent(
+        runtime=recovered_runtime,
+        verifier=ReceiptVerifier(),
+        adapter=forbidden,
+        run_id="run-action-durable",
+    )
+    result = recovered_agent.run_loop(
+        tool_expectations=PathExpectationResolver({}),
+        completion_expectation=CompletionExpectation(
+            expected_answer="done",
+            require_verified_observation=False,
+        ),
+    )
+
+    assert result.outcome is ModelLoopOutcome.COMPLETED
+    assert result.state.turn_index == 1
+    assert forbidden.calls == 0
+    event_types = [event.event_type for event in recovered_events.load("run-action-durable")]
+    assert event_types.count(EventType.MODEL_ACTION_REQUESTED) == 1
+    assert event_types.count(EventType.MODEL_ACTION_PROPOSED) == 1
+    assert event_types[-1] is EventType.COMPLETION_ACCEPTED
+    recovered_events.close()
+    recovered_effects.close()
+
+
+def test_persisted_tool_action_dispatches_once_without_recalling_adapter(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    workspace.joinpath("notes.txt").write_text("durable tool action", encoding="utf-8")
+    action = ToolCallAction.build(
+        tool_call_id="call-durable",
+        tool_name="read_file",
+        arguments={"path": "notes.txt"},
+    )
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-durable-tool-action", max_steps=1)
+    crashing_agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(actions=(action,)),
+        run_id="run-durable-tool-action",
+        loop_failure_injector=CrashAfterModelActionPersisted(),
+    )
+
+    with pytest.raises(SimulatedCrash, match="action persisted"):
+        crashing_agent.run_loop(
+            tool_expectations=PathExpectationResolver({}),
+            completion_expectation=CompletionExpectation(expected_answer="unused"),
+        )
+
+    events.close()
+    effects.close()
+
+    class ForbiddenAdapter:
+        calls = 0
+
+        def next_action(self, context: ModelInput) -> ModelAction:
+            self.calls += 1
+            raise AssertionError("persisted Tool Action must be replayed")
+
+    forbidden = ForbiddenAdapter()
+    recovered_runtime, recovered_events, recovered_effects = make_runtime(tmp_path, workspace)
+    recovered_agent = ModelDrivenFakeAgent(
+        runtime=recovered_runtime,
+        verifier=ReceiptVerifier(),
+        adapter=forbidden,
+        run_id="run-durable-tool-action",
+    )
+    result = recovered_agent.run_loop(
+        tool_expectations=PathExpectationResolver({"notes.txt": "0" * 64}),
+        completion_expectation=CompletionExpectation(expected_answer="unused"),
+    )
+
+    assert result.outcome is ModelLoopOutcome.FAILED
+    assert forbidden.calls == 0
+    event_types = [event.event_type for event in recovered_events.load("run-durable-tool-action")]
+    assert event_types.count(EventType.MODEL_ACTION_REQUESTED) == 1
+    assert event_types.count(EventType.MODEL_ACTION_PROPOSED) == 1
+    assert event_types.count(EventType.TOOL_REQUESTED) == 1
+    assert event_types.count(EventType.TOOL_STARTED) == 1
+    assert event_types.count(EventType.TOOL_SUCCEEDED) == 1
+    assert event_types[-1] is EventType.VERIFICATION_FAILED
+    recovered_events.close()
+    recovered_effects.close()
 
 
 def test_bounded_loop_pauses_at_gate_without_reinvoking_adapter(tmp_path: Path) -> None:
