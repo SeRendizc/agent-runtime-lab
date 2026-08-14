@@ -20,6 +20,7 @@ from agent_runtime_lab.fake_agent import (
     FakeAgent,
     FakeAgentCheckpoint,
     ModelDrivenFakeAgent,
+    ModelLoopCheckpoint,
     ModelLoopOutcome,
 )
 from agent_runtime_lab.model_adapter import (
@@ -35,6 +36,10 @@ from agent_runtime_lab.ownership.authorization import (
     AuthorizationContext,
     ToolRequest,
     WorkspaceBoundary,
+)
+from agent_runtime_lab.ownership.gates import (
+    GateAnswerSubmission,
+    GateResolution,
 )
 from agent_runtime_lab.ownership.policy import (
     OwnershipMode,
@@ -63,6 +68,12 @@ class CrashAfterToolResult:
         raise SimulatedCrash("crashed after durable tool result")
 
 
+class CrashBeforeRecoveredVerification:
+    def reach(self, checkpoint: ModelLoopCheckpoint) -> None:
+        assert checkpoint is ModelLoopCheckpoint.BEFORE_RECOVERED_VERIFICATION
+        raise SimulatedCrash("crashed before recovered verification")
+
+
 class PathExpectationResolver:
     def __init__(self, digests: dict[str, str]) -> None:
         self._digests = digests
@@ -81,6 +92,8 @@ class PathExpectationResolver:
 def make_runtime(
     tmp_path: Path,
     workspace: Path,
+    *,
+    write_mode: OwnershipMode = OwnershipMode.PAIR,
 ) -> tuple[AuthorizedToolRuntime, SQLiteEventStore, SQLiteToolEffectStore]:
     registry = make_restricted_file_registry()
     boundary = WorkspaceBoundary(workspace)
@@ -108,7 +121,7 @@ def make_runtime(
                 rules=(
                     OwnershipRule(
                         risk_tags=frozenset({"write_operation"}),
-                        minimum_mode=OwnershipMode.PAIR,
+                        minimum_mode=write_mode,
                         reason="writes require pair review",
                     ),
                 )
@@ -750,6 +763,174 @@ def test_bounded_loop_rejects_legacy_run_without_persisted_budget(tmp_path: Path
 
     assert runtime.load_state("run-loop-unbounded").status is RunStatus.READY
     assert len(events.load("run-loop-unbounded")) == 2
+    events.close()
+    effects.close()
+
+
+def test_pair_gate_loop_recovers_after_crash_without_repeating_adapter_or_tool(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    content = "approved durable write"
+    actions: tuple[ModelAction, ...] = (
+        ToolCallAction.build(
+            tool_call_id="call-write",
+            tool_name="write_file",
+            arguments={"path": "notes.txt", "content": content},
+        ),
+        FinalAnswerAction(answer="done"),
+    )
+    runtime, events, effects = make_runtime(tmp_path, workspace)
+    initialize_budgeted_run(events, "run-pair-resume", max_steps=2)
+    first_agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(actions=actions),
+        run_id="run-pair-resume",
+    )
+
+    paused = first_agent.run_loop(
+        tool_expectations=PathExpectationResolver({}),
+        completion_expectation=CompletionExpectation(expected_answer="done"),
+    )
+    assert paused.outcome is ModelLoopOutcome.PAUSED
+    proposal = paused.tool_results[0].gate_proposal
+    assert proposal is not None
+
+    approved = runtime.resolve_gate(GateResolution.approve(proposal.reference, actor="lucas"))
+    assert approved.state.status is RunStatus.VERIFYING
+    assert workspace.joinpath("notes.txt").read_text(encoding="utf-8") == content
+    events.close()
+    effects.close()
+
+    crashing_runtime, crashing_events, crashing_effects = make_runtime(
+        tmp_path,
+        workspace,
+    )
+    crashing_agent = ModelDrivenFakeAgent(
+        runtime=crashing_runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(actions=actions),
+        run_id="run-pair-resume",
+        loop_failure_injector=CrashBeforeRecoveredVerification(),
+    )
+    expectation = PathExpectationResolver(
+        {"notes.txt": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+    )
+
+    with pytest.raises(SimulatedCrash, match="recovered verification"):
+        crashing_agent.resume_loop(
+            tool_expectations=expectation,
+            completion_expectation=CompletionExpectation(expected_answer="done"),
+        )
+
+    assert crashing_runtime.load_state("run-pair-resume").status is RunStatus.VERIFYING
+    crashing_events.close()
+    crashing_effects.close()
+
+    class FinalOnlyAdapter:
+        calls = 0
+
+        def next_action(self, context: ModelInput) -> ModelAction:
+            self.calls += 1
+            assert context.turn_index == 1
+            return FinalAnswerAction(answer="done")
+
+    recovered_runtime, recovered_events, recovered_effects = make_runtime(
+        tmp_path,
+        workspace,
+    )
+    adapter = FinalOnlyAdapter()
+    recovered_agent = ModelDrivenFakeAgent(
+        runtime=recovered_runtime,
+        verifier=ReceiptVerifier(),
+        adapter=adapter,
+        run_id="run-pair-resume",
+    )
+
+    completed = recovered_agent.resume_loop(
+        tool_expectations=expectation,
+        completion_expectation=CompletionExpectation(expected_answer="done"),
+    )
+
+    assert completed.outcome is ModelLoopOutcome.COMPLETED
+    assert completed.state.turn_index == 2
+    assert adapter.calls == 1
+    assert len(completed.recovered_receipts) == 1
+    assert [type(action) for action in completed.actions] == [
+        ToolCallAction,
+        FinalAnswerAction,
+    ]
+    event_types = [event.event_type for event in recovered_events.load("run-pair-resume")]
+    assert event_types.count(EventType.TOOL_REQUESTED) == 1
+    assert event_types.count(EventType.TOOL_STARTED) == 1
+    assert event_types.count(EventType.TOOL_SUCCEEDED) == 1
+    assert event_types.count(EventType.VERIFICATION_SUCCEEDED) == 1
+    assert event_types[-1] is EventType.COMPLETION_ACCEPTED
+    recovered_events.close()
+    recovered_effects.close()
+
+
+def test_user_gate_pass_resumes_same_persisted_tool_turn(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    content = "user gated write"
+    actions: tuple[ModelAction, ...] = (
+        ToolCallAction.build(
+            tool_call_id="call-user-write",
+            tool_name="write_file",
+            arguments={"path": "notes.txt", "content": content},
+        ),
+        FinalAnswerAction(answer="done"),
+    )
+    runtime, events, effects = make_runtime(
+        tmp_path,
+        workspace,
+        write_mode=OwnershipMode.USER_GATE,
+    )
+    initialize_budgeted_run(events, "run-user-resume", max_steps=2)
+    agent = ModelDrivenFakeAgent(
+        runtime=runtime,
+        verifier=ReceiptVerifier(),
+        adapter=StaticModelAdapter(actions=actions),
+        run_id="run-user-resume",
+    )
+    paused = agent.run_loop(
+        tool_expectations=PathExpectationResolver({}),
+        completion_expectation=CompletionExpectation(expected_answer="done"),
+    )
+    proposal = paused.tool_results[0].gate_proposal
+    assert proposal is not None
+
+    passed = runtime.submit_gate_answer(
+        GateAnswerSubmission.build(
+            proposal.reference,
+            actor="lucas",
+            answer={
+                "tool_name": "write_file",
+                "path": "notes.txt",
+                "risk_explanation": (
+                    "写入会修改工作区文件内容，执行前必须确认目标路径和预期结果正确无误"
+                ),
+                "refuse": False,
+            },
+        )
+    )
+    assert passed.state.status is RunStatus.VERIFYING
+
+    completed = agent.resume_loop(
+        tool_expectations=PathExpectationResolver(
+            {"notes.txt": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+        ),
+        completion_expectation=CompletionExpectation(expected_answer="done"),
+    )
+
+    assert completed.outcome is ModelLoopOutcome.COMPLETED
+    assert completed.state.status is RunStatus.COMPLETED
+    assert completed.state.turn_index == 2
+    assert len(completed.recovered_receipts) == 1
+    assert workspace.joinpath("notes.txt").read_text(encoding="utf-8") == content
     events.close()
     effects.close()
 

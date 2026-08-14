@@ -93,6 +93,7 @@ class ModelLoopResult:
     tool_results: tuple[RuntimeToolResult, ...]
     verifications: tuple[VerificationResult, ...]
     completions: tuple[CompletionResult, ...]
+    recovered_receipts: tuple[ToolReceipt, ...] = ()
 
 
 class ToolExpectationResolver(Protocol):
@@ -104,6 +105,19 @@ class ToolExpectationResolver(Protocol):
         action: ToolCallAction,
     ) -> VerificationExpectation:
         """Resolve application-owned criteria without trusting model arguments."""
+
+
+class ModelLoopCheckpoint(StrEnum):
+    """Crash boundary exposed by the durable model loop."""
+
+    BEFORE_RECOVERED_VERIFICATION = "before_recovered_verification"
+
+
+class ModelLoopFailureInjector(Protocol):
+    """Observe a model-loop recovery checkpoint and optionally crash."""
+
+    def reach(self, checkpoint: ModelLoopCheckpoint) -> None:
+        """Handle one recovery checkpoint."""
 
 
 class FakeAgentCheckpoint(StrEnum):
@@ -184,12 +198,14 @@ class ModelDrivenFakeAgent:
         adapter: ModelAdapter,
         run_id: str,
         completion_verifier: CompletionVerifier | None = None,
+        loop_failure_injector: ModelLoopFailureInjector | None = None,
     ) -> None:
         self._runtime = runtime
         self._verifier = verifier
         self._adapter = adapter
         self._run_id = run_id
         self._completion_verifier = completion_verifier or CompletionVerifier()
+        self._loop_failure_injector = loop_failure_injector
 
     def run_tool_turn(
         self,
@@ -260,6 +276,72 @@ class ModelDrivenFakeAgent:
         tool_results: list[RuntimeToolResult] = []
         verifications: list[VerificationResult] = []
         completions: list[CompletionResult] = []
+        return self._continue_loop(
+            tool_expectations=tool_expectations,
+            completion_expectation=completion_expectation,
+            actions=actions,
+            tool_results=tool_results,
+            verifications=verifications,
+            completions=completions,
+            recovered_receipts=[],
+        )
+
+    def resume_loop(
+        self,
+        *,
+        tool_expectations: ToolExpectationResolver,
+        completion_expectation: CompletionExpectation,
+    ) -> ModelLoopResult:
+        """Resume after an approved Gate effect without recalling the Adapter."""
+
+        recovery = self._runtime.load_model_tool_recovery(self._run_id)
+        if self._loop_failure_injector is not None:
+            self._loop_failure_injector.reach(ModelLoopCheckpoint.BEFORE_RECOVERED_VERIFICATION)
+        expectation = tool_expectations.expectation_for(
+            recovery.context,
+            recovery.action,
+        )
+        if not isinstance(expectation, VerificationExpectation):
+            raise TypeError("tool expectation resolver must return VerificationExpectation")
+        verification = self._verifier.verify(recovery.receipt, expectation)
+        state = self._runtime.record_step_verification(
+            self._run_id,
+            verification,
+        )
+        actions: list[ModelAction] = [recovery.action]
+        verifications = [verification]
+        recovered_receipts = [recovery.receipt]
+        if state.status is RunStatus.FAILED:
+            return self._loop_result(
+                ModelLoopOutcome.FAILED,
+                actions,
+                [],
+                verifications,
+                [],
+                recovered_receipts,
+            )
+        return self._continue_loop(
+            tool_expectations=tool_expectations,
+            completion_expectation=completion_expectation,
+            actions=actions,
+            tool_results=[],
+            verifications=verifications,
+            completions=[],
+            recovered_receipts=recovered_receipts,
+        )
+
+    def _continue_loop(
+        self,
+        *,
+        tool_expectations: ToolExpectationResolver,
+        completion_expectation: CompletionExpectation,
+        actions: list[ModelAction],
+        tool_results: list[RuntimeToolResult],
+        verifications: list[VerificationResult],
+        completions: list[CompletionResult],
+        recovered_receipts: list[ToolReceipt],
+    ) -> ModelLoopResult:
+        """Continue only from READY using replayed turn and budget facts."""
 
         while True:
             try:
@@ -271,6 +353,7 @@ class ModelDrivenFakeAgent:
                     tool_results,
                     verifications,
                     completions,
+                    recovered_receipts,
                 )
 
             try:
@@ -286,6 +369,7 @@ class ModelDrivenFakeAgent:
                     tool_results,
                     verifications,
                     completions,
+                    recovered_receipts,
                 )
             actions.append(proposed)
 
@@ -304,6 +388,7 @@ class ModelDrivenFakeAgent:
                         tool_results,
                         verifications,
                         completions,
+                        recovered_receipts,
                     )
                 continue
 
@@ -321,6 +406,7 @@ class ModelDrivenFakeAgent:
                     tool_results,
                     verifications,
                     completions,
+                    recovered_receipts,
                 )
             if tool_result.receipt is None or tool_result.state.status is not RunStatus.VERIFYING:
                 return self._loop_result(
@@ -329,6 +415,7 @@ class ModelDrivenFakeAgent:
                     tool_results,
                     verifications,
                     completions,
+                    recovered_receipts,
                 )
 
             expectation = tool_expectations.expectation_for(context, proposed)
@@ -347,6 +434,7 @@ class ModelDrivenFakeAgent:
                     tool_results,
                     verifications,
                     completions,
+                    recovered_receipts,
                 )
 
     def _loop_result(
@@ -356,6 +444,7 @@ class ModelDrivenFakeAgent:
         tool_results: list[RuntimeToolResult],
         verifications: list[VerificationResult],
         completions: list[CompletionResult],
+        recovered_receipts: list[ToolReceipt] | None = None,
     ) -> ModelLoopResult:
         return ModelLoopResult(
             outcome=outcome,
@@ -364,4 +453,5 @@ class ModelDrivenFakeAgent:
             tool_results=tuple(tool_results),
             verifications=tuple(verifications),
             completions=tuple(completions),
+            recovered_receipts=tuple(recovered_receipts or ()),
         )

@@ -609,8 +609,7 @@ Lucas understanding gate — completed 2026-08-13:
 
 ## Current milestone — R4i bounded Agent loop
 
-Engineering implemented and verified locally; publication and Lucas
-understanding gate remain:
+Engineering implemented, verified, published, and understood by Lucas:
 
 - Added `run_loop` over the existing Tool and Completion contracts; it requests
   exactly one Adapter Action and dispatches by trusted Action type each turn.
@@ -630,6 +629,7 @@ understanding gate remain:
 Evidence:
 
 ```text
+Implementation: a8a236d
 R4i targeted tests: 51 passed
 Full suite: 204 passed, 1 skipped
 Ruff: All checks passed!
@@ -637,9 +637,48 @@ Format: 48 Python files already formatted
 Diff check: clean
 ```
 
+Lucas understanding gate — completed 2026-08-14:
+
+- Explained that a loop-local default budget would not be a replayable per-Run
+  contract; budget may be configured or calculated before creation, but must be
+  fixed in `run.created`.
+- Explained that Gate pause forbids the next Adapter call because the current
+  Action remains unresolved and cannot be skipped or regenerated.
+- Explained why Adapter failure currently fails closed: durable retry classes,
+  attempts, and backoff are not yet defined; transient retry can be added only
+  as a separate persisted policy.
+
+## Current milestone — R4j-a Gate resume and crash recovery
+
+Engineering implemented and verified locally; publication remains:
+
+- Added `ModelToolRecovery`, reconstructing the original Runtime-owned context,
+  exact Tool Action, and successful Receipt entirely from durable facts while
+  the Run is `VERIFYING`.
+- Added `resume_loop`, which verifies that recovered Receipt, advances the
+  original turn, and only then asks the Adapter for the next Action.
+- Added explicit `BEFORE_RECOVERED_VERIFICATION` failure injection. A second
+  restart repeats only pure Verification, never the Tool effect or old Adapter
+  Action.
+- Proved both PAIR approval and USER_GATE PASS resume the same persisted Tool
+  turn and then complete normally.
+- Audited Snapshot scope: a valid Snapshot must bind a verified Event prefix and
+  remain only a replay accelerator. R4j-b will implement this separately rather
+  than storing an unchecked `RunState` as a competing truth source.
+
+Evidence:
+
+```text
+R4j-a targeted tests: 74 passed
+Full suite: 206 passed, 1 skipped
+Ruff: All checks passed!
+Format: 48 Python files already formatted
+Diff check: clean
+```
+
 Next executable step:
 
-1. Publish R4i atomically and synchronize the control repository.
-2. Teach the bounded-loop termination and Gate pause contracts.
-3. Enter R4j Failure Injection, Gate resume orchestration, and Snapshot/recovery
-   closure.
+1. Publish R4j-a atomically and synchronize the control repository.
+2. Implement R4j-b validated Snapshot prefix and tail replay.
+3. Complete remaining loop-boundary Failure Injection and R4j understanding
+   gate.

@@ -21,7 +21,7 @@ from agent_runtime_lab.domain.replay import replay
 from agent_runtime_lab.domain.state import RunState, RunStatus
 from agent_runtime_lab.domain.tool_effects import ToolIntent, ToolOutcome, ToolReceipt
 from agent_runtime_lab.durable_tool_executor import DurableToolExecutor
-from agent_runtime_lab.model_adapter import FinalAnswerAction, ModelInput
+from agent_runtime_lab.model_adapter import FinalAnswerAction, ModelInput, ToolCallAction
 from agent_runtime_lab.ownership.authorization import (
     AuthorizationContext,
     AuthorizationDecision,
@@ -75,6 +75,15 @@ class RuntimeToolResult:
     gate_evaluation: GateEvaluation | None = None
     gate_attempt: int | None = None
     receipt: ToolReceipt | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ModelToolRecovery:
+    """Persisted model Tool turn reconstructed without calling the Adapter."""
+
+    context: ModelInput
+    action: ToolCallAction
+    receipt: ToolReceipt
 
 
 def _utc_now() -> datetime:
@@ -531,6 +540,38 @@ class AuthorizedToolRuntime:
         raise MissingVerificationEvidenceError(
             "verifying run has no persisted tool.succeeded event"
         )
+
+    def load_model_tool_recovery(self, run_id: str) -> ModelToolRecovery:
+        """Reconstruct one verifying model Tool turn entirely from durable facts."""
+
+        state = self.load_state(run_id)
+        if state.status is not RunStatus.VERIFYING or state.active_step_id is None:
+            raise InvalidTransitionError(
+                "model tool recovery requires a verifying run with an active step"
+            )
+        for event in reversed(self._event_store.load(run_id)):
+            if event.event_type is not EventType.TOOL_REQUESTED:
+                continue
+            if event.payload.get("step_id") != state.active_step_id:
+                continue
+            context = ModelInput.build(
+                run_id=run_id,
+                step_id=state.active_step_id,
+                turn_index=state.turn_index,
+                state_status=RunStatus.READY,
+                observation=self._load_step_observation(run_id),
+            )
+            action = ToolCallAction(
+                tool_call_id=self._payload_text(event.payload, "tool_call_id"),
+                tool_name=self._payload_text(event.payload, "tool_name"),
+                arguments_json=self._payload_text(event.payload, "arguments_json"),
+            )
+            return ModelToolRecovery(
+                context=context,
+                action=action,
+                receipt=self.load_verification_receipt(run_id),
+            )
+        raise MissingVerificationEvidenceError("verifying model turn has no persisted tool request")
 
     def _execute(
         self,

@@ -77,10 +77,12 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
   a final answer to the current durable step and prior verification;
 - a bounded Agent loop that dispatches Tool and Completion Actions until a
   terminal State, durable Gate pause, or persisted budget exhaustion;
-- 204 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
+- Gate-resume recovery that reconstructs the approved Tool Action and Receipt
+  without re-invoking either the Tool or Adapter;
+- 206 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
   and 48 package/test Python files pass the format check.
 
-R3.3 and R4a-R4h engineering are published on the development branch; R4i is
+R3.3 and R4a-R4i engineering are published on the development branch; R4j-a is
 implemented and verified in the current change. Nothing is claimed as merged
 to `main`. R4a is an in-process restricted file runner for a dedicated
 non-secret temporary workspace. Its path check and I/O are not one
@@ -198,6 +200,14 @@ PAIR or USER_GATE escalation returns `PAUSED` without approving, executing, or
 asking the Adapter again. Invalid, exhausted, or failing Adapters append a
 sanitized `model.action_failed` Event so the Run cannot remain ambiguously
 `READY` after loop failure.
+
+R4j-a resumes a loop that paused for PAIR or USER_GATE after the exact proposal
+is approved and its Tool effect reaches durable `VERIFYING`. The Runtime
+reconstructs the original `ModelInput`, `ToolCallAction`, and Receipt from
+Events and the Tool Effect Store; it does not ask the Adapter to recreate the
+approved Action. Verification advances the original turn, then the loop calls
+the Adapter only for the next turn. Failure injection immediately before the
+recovered Verification proves another restart still does not repeat the Tool.
 
 ## Learning workflow
 
