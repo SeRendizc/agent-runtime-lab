@@ -709,8 +709,8 @@ Format: 49 Python files already formatted
 
 ## Current milestone — R4k OpenAI-compatible Model Adapter
 
-Engineering implemented and verified locally; live DeepSeek smoke remains an
-explicit external acceptance check:
+Engineering implemented, verified, published, and understood by Lucas; live
+DeepSeek smoke remains an explicit external acceptance check:
 
 - Added a real `/chat/completions` HTTP transport using the Python standard
   library and sanitized network/HTTP/JSON failures.
@@ -737,8 +737,45 @@ Format: 54 Python files already formatted
 Live DeepSeek smoke: pending (execution environment blocks DeepSeek egress)
 ```
 
+Lucas understanding gate — completed 2026-08-15:
+
+- Explained that Provider Tool schemas guide generation but cannot replace
+  Runtime Registry, Authorization, Workspace, or Policy checks.
+- Explained that multiple/mixed/truncated Provider outputs are ambiguous and
+  must fail closed rather than be guessed or repaired by the Adapter.
+- Distinguished requested-only `MODEL_PENDING -> FAILED`, exact proposed
+  `ACTION_PENDING -> dispatch`, and completion rejection `-> READY`.
+
+## Current milestone — R4l versioned Trace and acceptance Demo
+
+Engineering implemented and verified locally; publication remains:
+
+- Added public immutable `TraceEventV1`, `TraceMetricsV1`, `RunTraceV1`, and
+  `build_run_trace` APIs.
+- Derived every Trace record by applying the normal Reducer, recording exact
+  state before/after, Event fingerprint, and canonical payload digest.
+- Exported only allowlisted index metadata; raw arguments, observations, file
+  content, model answers, and Gate answers remain absent.
+- Added stable counts for Events, model Actions, Tool requests, Gate
+  escalations, Verification outcomes, durable Runtime steps, and duration.
+- Added an end-to-end restricted-file Agent Demo: Tool Action -> Authorization
+  -> real read -> Receipt -> Verification -> next Action -> accepted
+  Completion -> Trace v1.
+- Proved deterministic JSON/digest, redaction, changed-payload binding, invalid
+  history rejection, public API exposure, and sanitized Demo output.
+
+Evidence:
+
+```text
+R4l targeted Trace/Demo/package tests: 7 passed
+Full suite: 240 passed, 1 skipped
+Ruff: All checks passed!
+Format: 58 Python files already formatted
+Live DeepSeek smoke: pending (execution environment blocks DeepSeek egress)
+```
+
 Next executable step:
 
-1. Publish R4k atomically and synchronize the control repository.
+1. Publish R4l atomically and synchronize the control repository.
 2. Run the one-call DeepSeek smoke from an environment with Provider egress.
-3. Complete the R4k understanding gate before R4l Trace/Demo closure.
+3. Complete the R4l understanding gate and final S3 acceptance review.

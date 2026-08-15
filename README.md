@@ -15,7 +15,8 @@ R4a restricted file-tool path, R4b verification/Fake Agent loop, R4c
 verification crash recovery, R4d timeout evidence, R4e static Model Adapter /
 Action boundary, R4f durable multi-turn path, R4g persisted step budget,
 R4j durable recovery boundaries, and the R4k OpenAI-compatible HTTP Adapter are
-implemented on that branch.
+implemented on that branch. R4l adds a versioned, redacted Trace and an
+end-to-end acceptance Demo derived from the same authoritative Events.
 R3.3c proposal revision rollover, concurrent duplicate semantics, and its
 understanding correction are complete. The R4a demonstration now lives under
 `examples/` rather than the reusable Runtime package.
@@ -85,8 +86,12 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
 - a real OpenAI-compatible Chat Completions HTTP Adapter with environment-only
   credentials, canonical Tool schemas, one-Action parsing, and sanitized
   Provider failures;
-- 234 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
-  and 54 Python files pass the format check.
+- deterministic Trace v1 records with Event fingerprints, payload digests,
+  Reducer-derived before/after states, safe metadata, and stable eval metrics;
+- a real restricted-file Agent Demo that executes Tool, Verification, and
+  Completion before exporting a redacted terminal Trace summary;
+- 240 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
+  and 58 Python files pass the format check.
 
 R3.3 and R4a-R4i engineering are published on the development branch; R4j-a is
 implemented and verified in the current change. Nothing is claimed as merged
@@ -229,6 +234,18 @@ or raw response:
 ```powershell
 $env:DEEPSEEK_API_KEY = "<your key>"
 .venv\Scripts\python.exe examples\r4k_deepseek_smoke.py
+```
+
+R4l derives Trace v1 by replaying the authoritative Event sequence through the
+normal Reducer. It records state transitions and SHA-256 bindings while
+allowlisting only non-sensitive indexes; raw arguments, observations, file
+content, model answers, and gate answers are omitted. Trace is disposable and
+cannot mutate Runtime State.
+
+Run the end-to-end trace acceptance Demo with:
+
+```powershell
+.venv\Scripts\python.exe examples\r4l_trace_demo.py
 ```
 
 ## Learning workflow
