@@ -682,3 +682,63 @@ Next executable step:
 2. Implement R4j-b validated Snapshot prefix and tail replay.
 3. Complete remaining loop-boundary Failure Injection and R4j understanding
    gate.
+
+## Current milestone — R4j-d durable Model Action boundary
+
+Engineering implemented, verified, published, and understood by Lucas:
+
+- Persisted `model.action_requested` before crossing the Adapter boundary and
+  exact `model.action_proposed` after validated return.
+- Treated requested-only recovery as an unknown Provider outcome: no automatic
+  Adapter retry without provider idempotency, durable lookup, or proof that the
+  call never crossed the boundary.
+- Reconstructed persisted Tool and Final Actions without recalling the Adapter;
+  downstream Tool/Completion Events bind the exact Action Event identity.
+- Lucas explained both what requested proves and the three guarantees that can
+  make a future retry safe.
+
+Evidence:
+
+```text
+Implementation: 972d2ad
+R4j-d targeted tests: 111 passed
+Full suite: 222 passed, 1 skipped
+Ruff: All checks passed!
+Format: 49 Python files already formatted
+```
+
+## Current milestone — R4k OpenAI-compatible Model Adapter
+
+Engineering implemented and verified locally; live DeepSeek smoke remains an
+explicit external acceptance check:
+
+- Added a real `/chat/completions` HTTP transport using the Python standard
+  library and sanitized network/HTTP/JSON failures.
+- Added immutable Provider-facing Tool schemas for the three restricted file
+  tools. They guide generation but do not bypass Runtime Registry,
+  Authorization, Workspace, durable execution, or Verification.
+- Built each request from immutable `ModelInput`, a fixed task, one model, and
+  bounded generation settings; credentials are loaded lazily from
+  `DEEPSEEK_API_KEY` and are never persisted or represented.
+- Parsed exactly one complete choice into one Tool or Final Action. Multiple
+  choices, parallel Tool calls, mixed Action/content, malformed arguments, and
+  truncated finish reasons fail closed.
+- Proved the production transport over a real loopback HTTP server in addition
+  to deterministic request/response tests.
+- Added `examples/r4k_deepseek_smoke.py` for one 16-token live acceptance call.
+
+Evidence:
+
+```text
+R4k targeted Adapter/loop tests: 46 passed
+Full suite: 234 passed, 1 skipped
+Ruff: All checks passed!
+Format: 54 Python files already formatted
+Live DeepSeek smoke: pending (execution environment blocks DeepSeek egress)
+```
+
+Next executable step:
+
+1. Publish R4k atomically and synchronize the control repository.
+2. Run the one-call DeepSeek smoke from an environment with Provider egress.
+3. Complete the R4k understanding gate before R4l Trace/Demo closure.

@@ -13,7 +13,8 @@ The active development branch is `durable-tool-execution-recovery`. The
 deterministic R1 core, durable R2 tool-effect path, R3 ownership and gate path,
 R4a restricted file-tool path, R4b verification/Fake Agent loop, R4c
 verification crash recovery, R4d timeout evidence, R4e static Model Adapter /
-Action boundary, R4f durable multi-turn path, and R4g persisted step budget are
+Action boundary, R4f durable multi-turn path, R4g persisted step budget,
+R4j durable recovery boundaries, and the R4k OpenAI-compatible HTTP Adapter are
 implemented on that branch.
 R3.3c proposal revision rollover, concurrent duplicate semantics, and its
 understanding correction are complete. The R4a demonstration now lives under
@@ -79,8 +80,13 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
   terminal State, durable Gate pause, or persisted budget exhaustion;
 - Gate-resume recovery that reconstructs the approved Tool Action and Receipt
   without re-invoking either the Tool or Adapter;
-- 206 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
-  and 48 package/test Python files pass the format check.
+- a two-event durable Model Action boundary that distinguishes unknown Provider
+  outcomes from exact persisted Actions and never regenerates the latter;
+- a real OpenAI-compatible Chat Completions HTTP Adapter with environment-only
+  credentials, canonical Tool schemas, one-Action parsing, and sanitized
+  Provider failures;
+- 234 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
+  and 54 Python files pass the format check.
 
 R3.3 and R4a-R4i engineering are published on the development branch; R4j-a is
 implemented and verified in the current change. Nothing is claimed as merged
@@ -208,6 +214,22 @@ Events and the Tool Effect Store; it does not ask the Adapter to recreate the
 approved Action. Verification advances the original turn, then the loop calls
 the Adapter only for the next turn. Failure injection immediately before the
 recovered Verification proves another restart still does not repeat the Tool.
+
+R4k connects the same `ModelAdapter` Protocol to an OpenAI-compatible
+`/chat/completions` endpoint. It sends immutable Runtime context and
+provider-facing Tool schemas, but the response remains an untrusted
+`ToolCallAction` or `FinalAnswerAction`. Multiple choices, parallel Tool calls,
+mixed content and Tool output, malformed arguments, and truncated responses are
+rejected rather than guessed. Credentials are loaded lazily from an environment
+variable and never persisted in Runtime Events.
+
+An optional DeepSeek wire smoke test can be run without printing the credential
+or raw response:
+
+```powershell
+$env:DEEPSEEK_API_KEY = "<your key>"
+.venv\Scripts\python.exe examples\r4k_deepseek_smoke.py
+```
 
 ## Learning workflow
 

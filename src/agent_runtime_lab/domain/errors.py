@@ -43,6 +43,10 @@ class ModelAdapterExhaustedError(RuntimeContractError):
     """A deterministic static adapter has no Action for the requested turn."""
 
 
+class ModelProviderError(RuntimeError):
+    """A remote model provider failed without exposing credentials or response bodies."""
+
+
 class StepBudgetExhaustedError(RuntimeContractError):
     """A run cannot request another Model Action after exhausting its budget."""
 
