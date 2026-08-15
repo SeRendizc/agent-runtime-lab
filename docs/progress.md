@@ -750,7 +750,7 @@ Lucas understanding gate — completed 2026-08-15:
 
 Engineering implemented and verified locally; publication remains:
 
-- Added public immutable `TraceEventV1`, `TraceMetricsV1`, `RunTraceV1`, and
+- Added public immutable `TraceEvent`, `TraceMetrics`, `RunTrace`, and
   `build_run_trace` APIs.
 - Derived every Trace record by applying the normal Reducer, recording exact
   state before/after, Event fingerprint, and canonical payload digest.

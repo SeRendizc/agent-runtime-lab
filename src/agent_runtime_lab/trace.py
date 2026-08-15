@@ -64,7 +64,7 @@ def _safe_payload_metadata(event: ExecutionEvent) -> dict[str, Any]:
 
 
 @dataclass(frozen=True, slots=True)
-class TraceEventV1:
+class TraceEvent:
     """One Event plus its deterministic state transition and safe indexes."""
 
     sequence: int
@@ -96,7 +96,7 @@ class TraceEventV1:
 
 
 @dataclass(frozen=True, slots=True)
-class TraceMetricsV1:
+class TraceMetrics:
     """Small stable metric surface for downstream evaluation."""
 
     event_count: int
@@ -122,13 +122,13 @@ class TraceMetricsV1:
 
 
 @dataclass(frozen=True, slots=True)
-class RunTraceV1:
+class RunTrace:
     """A disposable trace view that can always be rebuilt from Events."""
 
     run_id: str
     final_status: str
-    records: tuple[TraceEventV1, ...]
-    metrics: TraceMetricsV1
+    records: tuple[TraceEvent, ...]
+    metrics: TraceMetrics
     schema_version: int = TRACE_SCHEMA_VERSION
 
     def as_dict(self) -> dict[str, Any]:
@@ -147,17 +147,17 @@ class RunTraceV1:
         return _sha256_text(self.canonical_json())
 
 
-def build_run_trace(run_id: str, events: Iterable[ExecutionEvent]) -> RunTraceV1:
-    """Replay Events once and emit a deterministic redacted Trace v1."""
+def build_run_trace(run_id: str, events: Iterable[ExecutionEvent]) -> RunTrace:
+    """Replay Events once and emit a deterministic redacted Trace."""
 
     ordered_events = tuple(events)
     state = RunState.initial(run_id)
-    records: list[TraceEventV1] = []
+    records: list[TraceEvent] = []
     for event in ordered_events:
         state_before = state.status.value
         state = reduce(state, event)
         records.append(
-            TraceEventV1(
+            TraceEvent(
                 sequence=event.sequence,
                 event_id=event.event_id,
                 event_type=event.event_type.value,
@@ -175,7 +175,7 @@ def build_run_trace(run_id: str, events: Iterable[ExecutionEvent]) -> RunTraceV1
         duration = ordered_events[-1].occurred_at - ordered_events[0].occurred_at
         duration_ms = max(0, int(duration.total_seconds() * 1000))
     event_types = tuple(event.event_type for event in ordered_events)
-    metrics = TraceMetricsV1(
+    metrics = TraceMetrics(
         event_count=len(ordered_events),
         model_action_count=event_types.count(EventType.MODEL_ACTION_PROPOSED),
         tool_request_count=event_types.count(EventType.TOOL_REQUESTED),
@@ -185,7 +185,7 @@ def build_run_trace(run_id: str, events: Iterable[ExecutionEvent]) -> RunTraceV1
         runtime_steps=state.turn_index,
         duration_ms=duration_ms,
     )
-    return RunTraceV1(
+    return RunTrace(
         run_id=run_id,
         final_status=state.status.value,
         records=tuple(records),
