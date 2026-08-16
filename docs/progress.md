@@ -734,7 +734,7 @@ R4k targeted Adapter/loop tests: 46 passed
 Full suite: 234 passed, 1 skipped
 Ruff: All checks passed!
 Format: 54 Python files already formatted
-Live DeepSeek smoke: pending (execution environment blocks DeepSeek egress)
+Live DeepSeek smoke: PASS on 2026-08-16 (Lucas, external environment)
 ```
 
 Lucas understanding gate — completed 2026-08-15:
@@ -746,9 +746,9 @@ Lucas understanding gate — completed 2026-08-15:
 - Distinguished requested-only `MODEL_PENDING -> FAILED`, exact proposed
   `ACTION_PENDING -> dispatch`, and completion rejection `-> READY`.
 
-## Current milestone — R4l versioned Trace and acceptance Demo
+## R4l versioned Trace and acceptance Demo
 
-Engineering implemented and verified locally; publication remains:
+Engineering implemented, verified, published, and understood by Lucas:
 
 - Added public immutable `TraceEvent`, `TraceMetrics`, `RunTrace`, and
   `build_run_trace` APIs.
@@ -771,11 +771,36 @@ R4l targeted Trace/Demo/package tests: 7 passed
 Full suite: 240 passed, 1 skipped
 Ruff: All checks passed!
 Format: 58 Python files already formatted
-Live DeepSeek smoke: pending (execution environment blocks DeepSeek egress)
+Live DeepSeek smoke: PASS on 2026-08-16 (Lucas, external environment)
 ```
 
-Next executable step:
+Lucas understanding gate — completed 2026-08-15:
 
-1. Publish R4l atomically and synchronize the control repository.
-2. Run the one-call DeepSeek smoke from an environment with Provider egress.
-3. Complete the R4l understanding gate and final S3 acceptance review.
+- Distinguished authoritative Events from the derived, redacted Trace used by
+  Eval consumers.
+- Identified `payload_sha256` as the binding that detects a changed Event
+  payload without exposing that payload in Trace metadata.
+- Explained that the whole-Trace digest detects Trace changes, while
+  `schema_version` tells Eval consumers how to interpret the record.
+
+## 2026-08-16 — S3 final acceptance
+
+S3 Agent Runtime Lab is accepted as complete on
+`durable-tool-execution-recovery`:
+
+- Final local baseline: 240 passed, 1 environment-dependent skip.
+- Ruff check: passed.
+- Ruff format check: 58 Python files already formatted.
+- DeepSeek live smoke: PASS, reported by Lucas from an external environment
+  with Provider egress. This is external acceptance evidence, not a claim that
+  the restricted development container performed the call.
+- R4k and R4l understanding gates: passed.
+- Detailed acceptance scope and residual boundaries are recorded in
+  `docs/superpowers/specs/2026-08-16-s3-final-acceptance.md`.
+
+S4 is not started. The CodeOwnership path, package boundary, and first
+demonstration must be discussed and approved separately before implementation.
+
+Next decision:
+
+1. Agree on the S4 CodeOwnership route and repository/package boundary.

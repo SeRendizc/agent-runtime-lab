@@ -10,6 +10,7 @@ duplicating tool effects or bypassing user gates.
 ## Current status
 
 The active development branch is `durable-tool-execution-recovery`. The
+S3 Agent Runtime Lab acceptance review is complete on that branch. The
 deterministic R1 core, durable R2 tool-effect path, R3 ownership and gate path,
 R4a restricted file-tool path, R4b verification/Fake Agent loop, R4c
 verification crash recovery, R4d timeout evidence, R4e static Model Adapter /
@@ -17,6 +18,9 @@ Action boundary, R4f durable multi-turn path, R4g persisted step budget,
 R4j durable recovery boundaries, and the R4k OpenAI-compatible HTTP Adapter are
 implemented on that branch. R4l adds a versioned, redacted Trace and an
 end-to-end acceptance Demo derived from the same authoritative Events.
+The external DeepSeek smoke test was reported PASS by Lucas on 2026-08-16 from
+an environment with Provider egress; local verification independently passes
+240 tests with 1 environment-dependent skip, Ruff, and format checks.
 R3.3c proposal revision rollover, concurrent duplicate semantics, and its
 understanding correction are complete. The R4a demonstration now lives under
 `examples/` rather than the reusable Runtime package.
@@ -93,13 +97,13 @@ reparse coverage in `157c46f`, `a44d0db`, `6ac67b7`, and `18a1425`:
 - 240 tests pass with 1 environment-dependent symbolic-link skip, Ruff passes,
   and 58 Python files pass the format check.
 
-R3.3 and R4a-R4i engineering are published on the development branch; R4j-a is
-implemented and verified in the current change. Nothing is claimed as merged
-to `main`. R4a is an in-process restricted file runner for a dedicated
+S3 engineering and acceptance evidence are published on the development
+branch. Nothing is claimed as merged to `main`. R4a is an in-process restricted
+file runner for a dedicated
 non-secret temporary workspace. Its path check and I/O are not one
 kernel-atomic operation, so a hostile concurrent process can still create a
 check/use race. It is not a
-production sandbox, secret-redaction layer, Shell, or complete agent loop. R4d
+production sandbox, secret-redaction layer, or Shell. R4d
 records a timeout already enforced by a Runner/worker boundary; it does not
 claim that the synchronous in-process Runtime can safely interrupt arbitrary
 tool code.
@@ -121,7 +125,8 @@ The intended scope is:
 - policy integration for skills such as CodeOwnership.
 
 CodeOwnership is planned as a flagship policy and demonstration skill, not as a
-second general-purpose coding agent.
+second general-purpose coding agent. Its S4 implementation path remains a
+separate design decision and has not been started by this acceptance.
 
 ## Ownership boundary
 
