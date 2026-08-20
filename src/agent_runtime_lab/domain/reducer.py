@@ -37,18 +37,68 @@ def _expect_active_tool(state: RunState, event: ExecutionEvent) -> str:
     return tool_call_id
 
 
+def _required_positive_int(event: ExecutionEvent, field: str) -> int:
+    value = event.payload.get(field)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise InvalidTransitionError(
+            f"{event.event_type.value} requires positive integer payload.{field}"
+        )
+    return value
+
+
+def _expect_model_budget_available(state: RunState, event: ExecutionEvent) -> None:
+    if state.max_steps is not None and state.turn_index >= state.max_steps:
+        raise InvalidTransitionError(
+            f"{event.event_type.value} cannot exceed the durable model step budget"
+        )
+
+
+def _expect_pending_model_action(state: RunState, event: ExecutionEvent) -> None:
+    action_event_id = _required_text(event, "model_action_event_id")
+    if action_event_id != state.active_model_action_event_id:
+        raise InvalidTransitionError(
+            f"{event.event_type.value} does not match the active model action"
+        )
+
+
+def _expect_active_gate(state: RunState, event: ExecutionEvent) -> None:
+    _expect_active_tool(state, event)
+    proposal_digest = _required_text(event, "proposal_digest")
+    revision = _required_positive_int(event, "revision")
+
+    if proposal_digest != state.active_gate_proposal_digest:
+        raise InvalidTransitionError(
+            f"{event.event_type.value} does not match active gate proposal"
+        )
+    if revision != state.active_gate_revision:
+        raise InvalidTransitionError(
+            f"{event.event_type.value} does not match active gate revision"
+        )
+
+
 def _transition(state: RunState, event: ExecutionEvent) -> RunState:
     if event.event_type is EventType.RUN_CANCELLED:
         return replace(
             state,
             status=RunStatus.CANCELLED,
+            active_step_id=None,
+            active_model_invocation_id=None,
+            active_model_action_event_id=None,
             active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
             failure_reason=None,
         )
 
     if event.event_type is EventType.RUN_CREATED:
         _expect(state, RunStatus.NEW, event)
-        return replace(state, status=RunStatus.CREATED)
+        max_steps = event.payload.get("max_steps")
+        if max_steps is not None:
+            max_steps = _required_positive_int(event, "max_steps")
+        return replace(state, status=RunStatus.CREATED, max_steps=max_steps)
 
     if event.event_type is EventType.RUN_STARTED:
         _expect(state, RunStatus.CREATED, event)
@@ -62,11 +112,137 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
         _expect(state, RunStatus.PAUSED, event)
         return replace(state, status=RunStatus.READY)
 
-    if event.event_type is EventType.TOOL_REQUESTED:
+    if event.event_type is EventType.RUN_STEP_BUDGET_EXHAUSTED:
         _expect(state, RunStatus.READY, event)
+        max_steps = _required_positive_int(event, "max_steps")
+        completed_steps = event.payload.get("completed_steps")
+        if not isinstance(completed_steps, int) or isinstance(completed_steps, bool):
+            raise InvalidTransitionError(
+                "run.step_budget_exhausted requires integer payload.completed_steps"
+            )
+        if state.max_steps is None or max_steps != state.max_steps:
+            raise InvalidTransitionError(
+                "run.step_budget_exhausted does not match the run step budget"
+            )
+        if completed_steps != state.turn_index or completed_steps < max_steps:
+            raise InvalidTransitionError(
+                "run.step_budget_exhausted requires the durable budget to be exhausted"
+            )
+        return replace(
+            state,
+            status=RunStatus.FAILED,
+            failure_reason=f"step budget exhausted: {completed_steps}/{max_steps} steps consumed",
+        )
+
+    if event.event_type is EventType.MODEL_ACTION_REQUESTED:
+        _expect(state, RunStatus.READY, event)
+        _expect_model_budget_available(state, event)
+        step_id = _required_text(event, "step_id")
+        if step_id != f"step-{state.turn_index + 1}":
+            raise InvalidTransitionError("model.action_requested does not match the next step")
+        turn_index = event.payload.get("turn_index")
+        if turn_index != state.turn_index:
+            raise InvalidTransitionError("model.action_requested has a stale turn index")
+        _required_text(event, "observation_json")
+        return replace(
+            state,
+            status=RunStatus.MODEL_PENDING,
+            active_step_id=step_id,
+            active_model_invocation_id=_required_text(event, "invocation_id"),
+        )
+
+    if event.event_type is EventType.MODEL_ACTION_PROPOSED:
+        _expect(state, RunStatus.MODEL_PENDING, event)
+        invocation_id = _required_text(event, "invocation_id")
+        if invocation_id != state.active_model_invocation_id:
+            raise InvalidTransitionError(
+                "model.action_proposed does not match the active invocation"
+            )
+        if _required_text(event, "step_id") != state.active_step_id:
+            raise InvalidTransitionError("model.action_proposed does not match the active step")
+        if event.payload.get("turn_index") != state.turn_index:
+            raise InvalidTransitionError("model.action_proposed has a stale turn index")
+        action_type = _required_text(event, "action_type")
+        if action_type == "tool_call":
+            _required_text(event, "tool_call_id")
+            _required_text(event, "tool_name")
+            _required_text(event, "arguments_json")
+        elif action_type == "final_answer":
+            _required_text(event, "answer")
+        else:
+            raise InvalidTransitionError("model.action_proposed requires tool_call or final_answer")
+        return replace(
+            state,
+            status=RunStatus.ACTION_PENDING,
+            active_model_action_event_id=event.event_id,
+        )
+
+    if event.event_type is EventType.MODEL_ACTION_FAILED:
+        if state.status not in {RunStatus.READY, RunStatus.MODEL_PENDING}:
+            raise InvalidTransitionError(
+                f"model.action_failed requires ready or model_pending, got {state.status.value}"
+            )
+        return replace(
+            state,
+            status=RunStatus.FAILED,
+            active_step_id=None,
+            active_model_invocation_id=None,
+            active_model_action_event_id=None,
+            failure_reason=_required_text(event, "reason"),
+        )
+
+    if event.event_type in {
+        EventType.COMPLETION_ACCEPTED,
+        EventType.COMPLETION_REJECTED,
+    }:
+        if state.status is RunStatus.ACTION_PENDING:
+            _expect_pending_model_action(state, event)
+        else:
+            _expect(state, RunStatus.READY, event)
+        _expect_model_budget_available(state, event)
+        step_id = _required_text(event, "step_id")
+        if step_id != f"step-{state.turn_index + 1}":
+            raise InvalidTransitionError(
+                f"{event.event_type.value} does not match the next durable step"
+            )
+        _required_text(event, "answer_sha256")
+        _required_text(event, "summary")
+        if event.event_type is EventType.COMPLETION_ACCEPTED:
+            return replace(
+                state,
+                status=RunStatus.COMPLETED,
+                turn_index=state.turn_index + 1,
+                active_step_id=None,
+                active_model_invocation_id=None,
+                active_model_action_event_id=None,
+            )
+        return replace(
+            state,
+            status=RunStatus.READY,
+            turn_index=state.turn_index + 1,
+            active_step_id=None,
+            active_model_invocation_id=None,
+            active_model_action_event_id=None,
+        )
+
+    if event.event_type is EventType.TOOL_REQUESTED:
+        if state.status is RunStatus.ACTION_PENDING:
+            _expect_pending_model_action(state, event)
+        else:
+            _expect(state, RunStatus.READY, event)
+        step_id = event.payload.get("step_id")
+        if step_id is not None and (not isinstance(step_id, str) or not step_id):
+            raise InvalidTransitionError(
+                "tool.requested payload.step_id must be a non-empty string"
+            )
+        if step_id is not None:
+            _expect_model_budget_available(state, event)
         return replace(
             state,
             status=RunStatus.TOOL_PENDING,
+            active_step_id=step_id,
+            active_model_invocation_id=None,
+            active_model_action_event_id=None,
             active_tool_call_id=_required_text(event, "tool_call_id"),
         )
 
@@ -75,6 +251,147 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
         _expect_active_tool(state, event)
         return replace(state, status=RunStatus.TOOL_READY)
 
+    if event.event_type is EventType.TOOL_ESCALATED:
+        _expect(state, RunStatus.TOOL_PENDING, event)
+        _expect_active_tool(state, event)
+        proposal_digest = _required_text(event, "proposal_digest")
+        revision = _required_positive_int(event, "revision")
+        ownership_mode = _required_text(event, "ownership_mode")
+        if ownership_mode not in {"pair", "user_gate"}:
+            raise InvalidTransitionError(
+                "tool.escalated requires pair or user_gate payload.ownership_mode"
+            )
+        max_attempts = None
+        if ownership_mode == "user_gate":
+            max_attempts = _required_positive_int(event, "max_attempts")
+        return replace(
+            state,
+            status=RunStatus.AWAITING_GATE,
+            active_gate_proposal_digest=proposal_digest,
+            active_gate_revision=revision,
+            active_gate_mode=ownership_mode,
+            active_gate_attempts=0,
+            active_gate_max_attempts=max_attempts,
+        )
+
+    if event.event_type is EventType.GATE_APPROVED:
+        _expect(state, RunStatus.AWAITING_GATE, event)
+        _expect_active_gate(state, event)
+        if state.active_gate_mode != "pair":
+            raise InvalidTransitionError(
+                "gate.approved requires pair mode; user_gate requires evaluation"
+            )
+        return replace(
+            state,
+            status=RunStatus.TOOL_READY,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
+        )
+
+    if event.event_type is EventType.GATE_REVISED:
+        _expect(state, RunStatus.AWAITING_GATE, event)
+        _expect_active_tool(state, event)
+        previous_proposal_digest = _required_text(event, "previous_proposal_digest")
+        previous_revision = _required_positive_int(event, "previous_revision")
+        if previous_proposal_digest != state.active_gate_proposal_digest:
+            raise InvalidTransitionError("gate.revised does not match active gate proposal")
+        if previous_revision != state.active_gate_revision:
+            raise InvalidTransitionError("gate.revised does not match active gate revision")
+
+        proposal_digest = _required_text(event, "proposal_digest")
+        revision = _required_positive_int(event, "revision")
+        if revision != previous_revision + 1:
+            raise InvalidTransitionError("gate.revised revision must increment the active revision")
+        if proposal_digest == previous_proposal_digest:
+            raise InvalidTransitionError("gate.revised requires a new proposal digest")
+
+        ownership_mode = _required_text(event, "ownership_mode")
+        if ownership_mode not in {"pair", "user_gate"}:
+            raise InvalidTransitionError(
+                "gate.revised requires pair or user_gate payload.ownership_mode"
+            )
+        max_attempts = None
+        if ownership_mode == "user_gate":
+            max_attempts = _required_positive_int(event, "max_attempts")
+        return replace(
+            state,
+            active_gate_proposal_digest=proposal_digest,
+            active_gate_revision=revision,
+            active_gate_mode=ownership_mode,
+            active_gate_attempts=0,
+            active_gate_max_attempts=max_attempts,
+        )
+
+    if event.event_type is EventType.GATE_EVALUATED:
+        _expect(state, RunStatus.AWAITING_GATE, event)
+        _expect_active_gate(state, event)
+        if state.active_gate_mode != "user_gate":
+            raise InvalidTransitionError("gate.evaluated requires an active user_gate")
+
+        attempt = _required_positive_int(event, "attempt")
+        max_attempts = _required_positive_int(event, "max_attempts")
+        if max_attempts != state.active_gate_max_attempts:
+            raise InvalidTransitionError("gate.evaluated max_attempts changed")
+        if attempt != state.active_gate_attempts + 1:
+            raise InvalidTransitionError(
+                "gate.evaluated attempt must increment the durable attempt count"
+            )
+
+        outcome = _required_text(event, "outcome")
+        reason = _required_text(event, "reason")
+        if outcome == "retry":
+            if attempt >= max_attempts:
+                raise InvalidTransitionError(
+                    "gate.evaluated cannot retry after exhausting attempts"
+                )
+            return replace(state, active_gate_attempts=attempt)
+        if outcome == "pass":
+            return replace(
+                state,
+                status=RunStatus.TOOL_READY,
+                active_gate_proposal_digest=None,
+                active_gate_revision=None,
+                active_gate_mode=None,
+                active_gate_attempts=0,
+                active_gate_max_attempts=None,
+            )
+        if outcome == "block":
+            return replace(
+                state,
+                status=RunStatus.FAILED,
+                active_step_id=None,
+                active_tool_call_id=None,
+                active_gate_proposal_digest=None,
+                active_gate_revision=None,
+                active_gate_mode=None,
+                active_gate_attempts=0,
+                active_gate_max_attempts=None,
+                failure_reason=reason,
+            )
+        raise InvalidTransitionError(
+            "gate.evaluated requires pass, retry, or block payload.outcome"
+        )
+
+    if event.event_type is EventType.GATE_REJECTED:
+        _expect(state, RunStatus.AWAITING_GATE, event)
+        _expect_active_gate(state, event)
+        reason = _required_text(event, "reason")
+        return replace(
+            state,
+            status=RunStatus.FAILED,
+            active_step_id=None,
+            active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
+            failure_reason=reason,
+        )
+
     if event.event_type is EventType.TOOL_DENIED:
         _expect(state, RunStatus.TOOL_PENDING, event)
         _expect_active_tool(state, event)
@@ -82,7 +399,13 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
         return replace(
             state,
             status=RunStatus.FAILED,
+            active_step_id=None,
             active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
             failure_reason=reason,
         )
 
@@ -98,6 +421,11 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
             state,
             status=RunStatus.VERIFYING,
             active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
         )
 
     if event.event_type is EventType.TOOL_FAILED:
@@ -107,19 +435,60 @@ def _transition(state: RunState, event: ExecutionEvent) -> RunState:
         return replace(
             state,
             status=RunStatus.FAILED,
+            active_step_id=None,
             active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
+            failure_reason=reason,
+        )
+
+    if event.event_type is EventType.TOOL_TIMED_OUT:
+        _expect(state, RunStatus.TOOL_RUNNING, event)
+        _expect_active_tool(state, event)
+        reason = _required_text(event, "reason")
+        return replace(
+            state,
+            status=RunStatus.FAILED,
+            active_step_id=None,
+            active_tool_call_id=None,
+            active_gate_proposal_digest=None,
+            active_gate_revision=None,
+            active_gate_mode=None,
+            active_gate_attempts=0,
+            active_gate_max_attempts=None,
             failure_reason=reason,
         )
 
     if event.event_type is EventType.VERIFICATION_SUCCEEDED:
         _expect(state, RunStatus.VERIFYING, event)
-        return replace(state, status=RunStatus.COMPLETED)
+        scope = event.payload.get("scope", "run")
+        if scope == "run":
+            return replace(
+                state,
+                status=RunStatus.COMPLETED,
+                active_step_id=None,
+            )
+        if scope == "step":
+            step_id = _required_text(event, "step_id")
+            if state.active_step_id is None or step_id != state.active_step_id:
+                raise InvalidTransitionError("verification.succeeded does not match active step")
+            return replace(
+                state,
+                status=RunStatus.READY,
+                turn_index=state.turn_index + 1,
+                active_step_id=None,
+            )
+        raise InvalidTransitionError("verification.succeeded payload.scope must be run or step")
 
     if event.event_type is EventType.VERIFICATION_FAILED:
         _expect(state, RunStatus.VERIFYING, event)
         return replace(
             state,
             status=RunStatus.FAILED,
+            active_step_id=None,
             failure_reason=_required_text(event, "reason"),
         )
 
